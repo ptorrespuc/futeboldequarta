@@ -271,6 +271,12 @@ max_frequency = "5s"
 # enabled = true
 # uri = "pg-functions://<database>/<schema>/<hook_name>"
 
+# Keep disabled until Mailtrap has a sender/domain authorized for the Send API.
+[auth.hook.send_email]
+enabled = false
+uri = "https://yxpalopakwwuxzoqlyov.supabase.co/functions/v1/send-email"
+secrets = "env(SUPABASE_SEND_EMAIL_HOOK_SECRET)"
+
 # Configure one of the supported SMS providers: `twilio`, `twilio_verify`, `messagebird`, `textlocal`, `vonage`.
 [auth.sms.twilio]
 enabled = false

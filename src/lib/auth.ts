@@ -1,4 +1,4 @@
-import type { Session } from "@supabase/supabase-js";
+import type { EmailOtpType, Session } from "@supabase/supabase-js";
 
 import { supabase } from "@/src/lib/supabase";
 
@@ -17,6 +17,17 @@ function parseUrlParams(url: string) {
 
 function buildAuthRedirectUrl(path: string) {
   return buildNativeRedirectUrl(path);
+}
+
+function isEmailOtpType(value: string | null): value is EmailOtpType {
+  return (
+    value === "signup" ||
+    value === "invite" ||
+    value === "magiclink" ||
+    value === "recovery" ||
+    value === "email_change" ||
+    value === "email"
+  );
 }
 
 export async function getCurrentSession() {
@@ -104,6 +115,23 @@ export async function consumeAuthRedirect(url: string) {
   const accessToken = params.get("access_token");
   const refreshToken = params.get("refresh_token");
   const type = params.get("type");
+  const tokenHash = params.get("token_hash");
+
+  if (tokenHash && isEmailOtpType(type)) {
+    const { data, error } = await supabase.auth.verifyOtp({
+      type,
+      token_hash: tokenHash,
+    });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return {
+      session: data.session,
+      type,
+    };
+  }
 
   if (!accessToken || !refreshToken) {
     return null;
