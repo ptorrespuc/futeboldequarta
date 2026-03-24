@@ -24,10 +24,55 @@ export type RosterMember = {
   preferredPositions: ModalityPosition[];
 };
 
+export type CreateSportsAccountInput = {
+  createdBy: string;
+  name: string;
+  slug: string;
+  modalityId: string;
+  timezone: string;
+  maxPlayersPerEvent: number;
+  confirmationOpenHoursBefore: number;
+  confirmationCloseMinutesBefore: number;
+  autoNotifyConfirmationOpen: boolean;
+  autoNotifyWaitlistChanges: boolean;
+  autoNotifyEventUpdates: boolean;
+  schedule: {
+    weekday: number;
+    startsAt: string;
+    endsAt: string;
+  };
+  priorityGroups: Array<{
+    name: string;
+    colorHex: string | null;
+  }>;
+};
+
 function throwIfError(error: { message: string } | null) {
   if (error) {
     throw new Error(error.message);
   }
+}
+
+export async function listSportModalities(): Promise<SportModality[]> {
+  const { data, error } = await supabase
+    .from("sport_modalities")
+    .select("id, name, slug, players_per_team, created_by, created_at, updated_at")
+    .order("name", { ascending: true });
+
+  throwIfError(error);
+  return (data ?? []) as SportModality[];
+}
+
+export async function listAllSportsAccounts(): Promise<SportsAccount[]> {
+  const { data, error } = await supabase
+    .from("sports_accounts")
+    .select(
+      "id, name, slug, modality_id, timezone, max_players_per_event, confirmation_open_hours_before, confirmation_close_minutes_before, auto_notify_confirmation_open, auto_notify_waitlist_changes, auto_notify_event_updates, created_by, created_at, updated_at",
+    )
+    .order("name", { ascending: true });
+
+  throwIfError(error);
+  return (data ?? []) as SportsAccount[];
 }
 
 export async function getAccountOverview(accountId: string): Promise<AccountOverview> {
@@ -246,6 +291,70 @@ export async function updateSportsAccountBasics(input: {
     .eq("id", input.accountId);
 
   throwIfError(error);
+}
+
+export async function createSportsAccount(input: CreateSportsAccountInput) {
+  const { data: accountData, error: accountError } = await supabase
+    .from("sports_accounts")
+    .insert({
+      name: input.name,
+      slug: input.slug,
+      modality_id: input.modalityId,
+      timezone: input.timezone,
+      max_players_per_event: input.maxPlayersPerEvent,
+      confirmation_open_hours_before: input.confirmationOpenHoursBefore,
+      confirmation_close_minutes_before: input.confirmationCloseMinutesBefore,
+      auto_notify_confirmation_open: input.autoNotifyConfirmationOpen,
+      auto_notify_waitlist_changes: input.autoNotifyWaitlistChanges,
+      auto_notify_event_updates: input.autoNotifyEventUpdates,
+      created_by: input.createdBy,
+    })
+    .select(
+      "id, name, slug, modality_id, timezone, max_players_per_event, confirmation_open_hours_before, confirmation_close_minutes_before, auto_notify_confirmation_open, auto_notify_waitlist_changes, auto_notify_event_updates, created_by, created_at, updated_at",
+    )
+    .single();
+
+  throwIfError(accountError);
+
+  const account = accountData as SportsAccount;
+
+  const scheduleStartsAt = input.schedule.startsAt.length === 5
+    ? `${input.schedule.startsAt}:00`
+    : input.schedule.startsAt;
+  const scheduleEndsAt = input.schedule.endsAt.length === 5
+    ? `${input.schedule.endsAt}:00`
+    : input.schedule.endsAt;
+
+  const scheduleQuery = supabase.from("account_schedules").insert({
+    account_id: account.id,
+    weekday: input.schedule.weekday,
+    starts_at: scheduleStartsAt,
+    ends_at: scheduleEndsAt,
+    is_active: true,
+  });
+
+  const priorityGroupsQuery =
+    input.priorityGroups.length > 0
+      ? supabase.from("account_priority_groups").insert(
+          input.priorityGroups.map((group, index) => ({
+            account_id: account.id,
+            name: group.name,
+            priority_rank: index + 1,
+            color_hex: group.colorHex,
+            is_active: true,
+          })),
+        )
+      : Promise.resolve({ error: null as { message: string } | null });
+
+  const [{ error: scheduleError }, { error: priorityGroupsError }] = await Promise.all([
+    scheduleQuery,
+    priorityGroupsQuery,
+  ]);
+
+  throwIfError(scheduleError);
+  throwIfError(priorityGroupsError);
+
+  return account;
 }
 
 export async function updateProfileBasics(input: {

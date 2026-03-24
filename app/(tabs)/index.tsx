@@ -11,12 +11,15 @@ import {
 
 import Colors from "@/constants/Colors";
 import {
+  createSportsAccount,
   getAccountOverview,
+  listAllSportsAccounts,
+  listSportModalities,
   updateSportsAccountBasics,
   type AccountOverview,
 } from "@/src/lib/accounts";
 import { useAuth } from "@/src/providers/auth-provider";
-import type { AccountRole } from "@/src/types/domain";
+import type { AccountRole, SportModality, SportsAccount } from "@/src/types/domain";
 
 const roleLabels: Record<AccountRole, string> = {
   group_admin: "Admin do grupo",
@@ -34,6 +37,15 @@ const weekdayLabels = [
   "Sabado",
 ];
 
+const priorityColors = ["#1d7f46", "#5a9b3c", "#88938c", "#4d7c66", "#9aac8f"];
+
+type AccountAccessItem = {
+  account: SportsAccount;
+  roleLabel: string;
+  membershipRole: AccountRole | null;
+  priorityGroupName: string | null;
+};
+
 function getReadableError(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -42,47 +54,163 @@ function getReadableError(error: unknown) {
   return "Nao foi possivel carregar os dados da conta.";
 }
 
+function slugify(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+}
+
+function isValidHourMinute(value: string) {
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function parsePriorityGroups(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((name, index) => ({
+      name,
+      colorHex: priorityColors[index] ?? null,
+    }));
+}
+
 function formatSchedule(weekday: number, startsAt: string, endsAt: string) {
-  return `${weekdayLabels[weekday] ?? "Dia"} • ${startsAt.slice(0, 5)} às ${endsAt.slice(0, 5)}`;
+  return `${weekdayLabels[weekday] ?? "Dia"} | ${startsAt.slice(0, 5)} as ${endsAt.slice(0, 5)}`;
 }
 
-function formatBooleanLabel(value: boolean) {
-  return value ? "Ativo" : "Desligado";
-}
-
-export default function TabOneScreen() {
+export default function HomeScreen() {
   const { profile, memberships, error, signOut, refresh } = useAuth();
+  const [superAdminAccounts, setSuperAdminAccounts] = useState<SportsAccount[]>([]);
+  const [modalities, setModalities] = useState<SportModality[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [overview, setOverview] = useState<AccountOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [isOverviewLoading, setIsOverviewLoading] = useState(false);
+  const [isAdminLoading, setIsAdminLoading] = useState(false);
+  const [isSavingAccount, setIsSavingAccount] = useState(false);
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+  const [message, setMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+
   const [accountNameDraft, setAccountNameDraft] = useState("");
   const [maxPlayersDraft, setMaxPlayersDraft] = useState("");
   const [openHoursDraft, setOpenHoursDraft] = useState("");
   const [closeMinutesDraft, setCloseMinutesDraft] = useState("");
-  const [isSavingAccount, setIsSavingAccount] = useState(false);
+
+  const [createNameDraft, setCreateNameDraft] = useState("");
+  const [createSlugDraft, setCreateSlugDraft] = useState("");
+  const [createModalityId, setCreateModalityId] = useState<string | null>(null);
+  const [createWeekday, setCreateWeekday] = useState("3");
+  const [createStartsAt, setCreateStartsAt] = useState("20:30");
+  const [createEndsAt, setCreateEndsAt] = useState("22:00");
+  const [createMaxPlayers, setCreateMaxPlayers] = useState("20");
+  const [createOpenHours, setCreateOpenHours] = useState("48");
+  const [createCloseMinutes, setCreateCloseMinutes] = useState("120");
+  const [createPriorityGroups, setCreatePriorityGroups] = useState(
+    "Prioridade 1, Prioridade 2, Lista geral",
+  );
 
   useEffect(() => {
-    if (memberships.length === 0) {
+    setCreateSlugDraft(slugify(createNameDraft));
+  }, [createNameDraft]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadAdminData() {
+      if (!profile?.is_super_admin) {
+        setSuperAdminAccounts([]);
+        setModalities([]);
+        return;
+      }
+
+      setIsAdminLoading(true);
+
+      try {
+        const [nextAccounts, nextModalities] = await Promise.all([
+          listAllSportsAccounts(),
+          listSportModalities(),
+        ]);
+
+        if (!isActive) {
+          return;
+        }
+
+        setSuperAdminAccounts(nextAccounts);
+        setModalities(nextModalities);
+
+        if (!createModalityId && nextModalities.length > 0) {
+          setCreateModalityId(nextModalities[0].id);
+        }
+      } catch (loadError) {
+        if (isActive) {
+          setMessage({ tone: "error", text: getReadableError(loadError) });
+        }
+      } finally {
+        if (isActive) {
+          setIsAdminLoading(false);
+        }
+      }
+    }
+
+    void loadAdminData();
+
+    return () => {
+      isActive = false;
+    };
+  }, [profile?.is_super_admin, createModalityId]);
+
+  const availableAccounts = (() => {
+    const accountMap = new Map<string, AccountAccessItem>();
+
+    for (const membership of memberships) {
+      accountMap.set(membership.account.id, {
+        account: membership.account,
+        roleLabel: roleLabels[membership.membership.role],
+        membershipRole: membership.membership.role,
+        priorityGroupName: membership.priorityGroup?.name ?? null,
+      });
+    }
+
+    if (profile?.is_super_admin) {
+      for (const account of superAdminAccounts) {
+        if (!accountMap.has(account.id)) {
+          accountMap.set(account.id, {
+            account,
+            roleLabel: "Super admin",
+            membershipRole: null,
+            priorityGroupName: null,
+          });
+        }
+      }
+    }
+
+    return [...accountMap.values()].sort((a, b) => a.account.name.localeCompare(b.account.name));
+  })();
+
+  const selectedAccess = availableAccounts.find((item) => item.account.id === selectedAccountId) ?? null;
+  const selectedMembership = memberships.find((item) => item.account.id === selectedAccountId) ?? null;
+
+  useEffect(() => {
+    if (availableAccounts.length === 0) {
       setSelectedAccountId(null);
       return;
     }
 
-    const accountStillExists = memberships.some((item) => item.account.id === selectedAccountId);
-
-    if (!selectedAccountId || !accountStillExists) {
-      setSelectedAccountId(memberships[0].account.id);
+    if (!availableAccounts.some((item) => item.account.id === selectedAccountId)) {
+      setSelectedAccountId(availableAccounts[0].account.id);
     }
-  }, [memberships, selectedAccountId]);
-
-  const selectedMembership =
-    memberships.find((item) => item.account.id === selectedAccountId) ?? memberships[0] ?? null;
+  }, [availableAccounts, selectedAccountId]);
 
   useEffect(() => {
     let isActive = true;
 
     async function loadOverview() {
-      if (!selectedMembership) {
+      if (!selectedAccess) {
         setOverview(null);
         setOverviewError(null);
         return;
@@ -92,7 +220,7 @@ export default function TabOneScreen() {
       setOverviewError(null);
 
       try {
-        const nextOverview = await getAccountOverview(selectedMembership.account.id);
+        const nextOverview = await getAccountOverview(selectedAccess.account.id);
 
         if (!isActive) {
           return;
@@ -100,12 +228,10 @@ export default function TabOneScreen() {
 
         setOverview(nextOverview);
       } catch (loadError) {
-        if (!isActive) {
-          return;
+        if (isActive) {
+          setOverview(null);
+          setOverviewError(getReadableError(loadError));
         }
-
-        setOverview(null);
-        setOverviewError(getReadableError(loadError));
       } finally {
         if (isActive) {
           setIsOverviewLoading(false);
@@ -118,7 +244,7 @@ export default function TabOneScreen() {
     return () => {
       isActive = false;
     };
-  }, [selectedMembership]);
+  }, [selectedAccess]);
 
   useEffect(() => {
     if (!overview) {
@@ -135,6 +261,14 @@ export default function TabOneScreen() {
     setCloseMinutesDraft(String(overview.account.confirmation_close_minutes_before));
   }, [overview]);
 
+  async function reloadAccounts() {
+    if (!profile?.is_super_admin) {
+      return;
+    }
+
+    setSuperAdminAccounts(await listAllSportsAccounts());
+  }
+
   async function handleSaveAccount() {
     if (!overview) {
       return;
@@ -144,12 +278,8 @@ export default function TabOneScreen() {
     const confirmationOpenHoursBefore = Number(openHoursDraft);
     const confirmationCloseMinutesBefore = Number(closeMinutesDraft);
 
-    if (!accountNameDraft.trim()) {
-      setOverviewError("Informe o nome da conta.");
-      return;
-    }
-
     if (
+      !accountNameDraft.trim() ||
       !Number.isInteger(maxPlayersPerEvent) ||
       maxPlayersPerEvent <= 0 ||
       !Number.isInteger(confirmationOpenHoursBefore) ||
@@ -157,7 +287,7 @@ export default function TabOneScreen() {
       !Number.isInteger(confirmationCloseMinutesBefore) ||
       confirmationCloseMinutesBefore < 0
     ) {
-      setOverviewError("Revise os campos numericos da configuracao da conta.");
+      setOverviewError("Revise os campos da conta esportiva.");
       return;
     }
 
@@ -173,13 +303,90 @@ export default function TabOneScreen() {
         confirmationCloseMinutesBefore,
       });
 
-      const nextOverview = await getAccountOverview(overview.account.id);
-      setOverview(nextOverview);
+      setOverview(await getAccountOverview(overview.account.id));
+      await reloadAccounts();
       await refresh();
+      setMessage({ tone: "success", text: "Conta esportiva atualizada." });
     } catch (saveError) {
       setOverviewError(getReadableError(saveError));
     } finally {
       setIsSavingAccount(false);
+    }
+  }
+
+  async function handleCreateAccount() {
+    if (!profile) {
+      return;
+    }
+
+    const slug = createSlugDraft.trim() || slugify(createNameDraft);
+    const maxPlayersPerEvent = Number(createMaxPlayers);
+    const confirmationOpenHoursBefore = Number(createOpenHours);
+    const confirmationCloseMinutesBefore = Number(createCloseMinutes);
+    const weekday = Number(createWeekday);
+    const priorityGroups = parsePriorityGroups(createPriorityGroups);
+
+    if (
+      !createNameDraft.trim() ||
+      !slug ||
+      !createModalityId ||
+      !Number.isInteger(weekday) ||
+      weekday < 0 ||
+      weekday > 6 ||
+      !isValidHourMinute(createStartsAt) ||
+      !isValidHourMinute(createEndsAt) ||
+      !Number.isInteger(maxPlayersPerEvent) ||
+      maxPlayersPerEvent <= 0 ||
+      !Number.isInteger(confirmationOpenHoursBefore) ||
+      confirmationOpenHoursBefore < 0 ||
+      !Number.isInteger(confirmationCloseMinutesBefore) ||
+      confirmationCloseMinutesBefore < 0 ||
+      priorityGroups.length === 0
+    ) {
+      setMessage({ tone: "error", text: "Revise os dados da nova conta esportiva." });
+      return;
+    }
+
+    setIsCreatingAccount(true);
+    setMessage(null);
+
+    try {
+      const createdAccount = await createSportsAccount({
+        createdBy: profile.id,
+        name: createNameDraft.trim(),
+        slug,
+        modalityId: createModalityId,
+        timezone: "America/Sao_Paulo",
+        maxPlayersPerEvent,
+        confirmationOpenHoursBefore,
+        confirmationCloseMinutesBefore,
+        autoNotifyConfirmationOpen: true,
+        autoNotifyWaitlistChanges: true,
+        autoNotifyEventUpdates: true,
+        schedule: {
+          weekday,
+          startsAt: createStartsAt,
+          endsAt: createEndsAt,
+        },
+        priorityGroups,
+      });
+
+      await reloadAccounts();
+      setSelectedAccountId(createdAccount.id);
+      setCreateNameDraft("");
+      setCreateSlugDraft("");
+      setCreateWeekday("3");
+      setCreateStartsAt("20:30");
+      setCreateEndsAt("22:00");
+      setCreateMaxPlayers("20");
+      setCreateOpenHours("48");
+      setCreateCloseMinutes("120");
+      setCreatePriorityGroups("Prioridade 1, Prioridade 2, Lista geral");
+      setMessage({ tone: "success", text: "Conta esportiva criada com sucesso." });
+    } catch (createError) {
+      setMessage({ tone: "error", text: getReadableError(createError) });
+    } finally {
+      setIsCreatingAccount(false);
     }
   }
 
@@ -190,70 +397,206 @@ export default function TabOneScreen() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <View style={styles.hero}>
-        <View style={styles.heroHalo} />
         <Text style={styles.kicker}>Conta conectada</Text>
-        <Text style={styles.heroTitle}>{profile?.full_name ?? "Usuario autenticado"}</Text>
+        <Text style={styles.heroTitle}>{profile?.full_name || "Usuario autenticado"}</Text>
         <Text style={styles.heroSubtitle}>
           {profile?.is_super_admin
-            ? "Perfil global habilitado para administrar modalidade e conta esportiva."
-            : "Perfil autenticado no Supabase, com leitura da conta esportiva e do elenco."}
+            ? "Perfil global habilitado para criar e administrar contas esportivas."
+            : "Perfil autenticado para acessar a conta esportiva vinculada."}
         </Text>
-        <View style={styles.heroFooter}>
-          <View style={styles.heroPill}>
-            <Text style={styles.heroPillValue}>{memberships.length}</Text>
-            <Text style={styles.heroPillLabel}>Contas vinculadas</Text>
-          </View>
-          <View style={styles.heroPill}>
-            <Text style={styles.heroPillValue}>{profile?.email ?? "Sem email"}</Text>
-            <Text style={styles.heroPillLabel}>Email atual</Text>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Vinculos do usuario</Text>
-          <Pressable onPress={() => void signOut()} style={styles.signOutButton}>
-            <Text style={styles.signOutText}>Sair</Text>
-          </Pressable>
-        </View>
-
-        {memberships.length > 0 ? (
-          memberships.map((item) => {
-            const isSelected = item.account.id === selectedMembership?.account.id;
-
-            return (
-              <Pressable
-                key={item.membership.id}
-                onPress={() => setSelectedAccountId(item.account.id)}
-                style={[styles.membershipCard, isSelected && styles.membershipCardSelected]}>
-                <Text style={styles.membershipName}>{item.account.name}</Text>
-                <Text style={styles.membershipMeta}>{roleLabels[item.membership.role]}</Text>
-                <Text style={styles.membershipMeta}>
-                  Grupo prioritario: {item.priorityGroup?.name ?? "Nao definido"}
-                </Text>
-              </Pressable>
-            );
-          })
-        ) : (
-          <View style={styles.membershipEmpty}>
-            <Text style={styles.membershipEmptyTitle}>Nenhuma conta vinculada ainda</Text>
-            <Text style={styles.membershipEmptyText}>
-              O schema e o seed ja estao aplicados. O proximo passo e associar este perfil em
-              `account_memberships`.
+        <View style={styles.heroRow}>
+          <View style={styles.heroStat}>
+            <Text style={styles.heroStatValue}>{availableAccounts.length}</Text>
+            <Text style={styles.heroStatLabel}>
+              {profile?.is_super_admin ? "Contas visiveis" : "Contas vinculadas"}
             </Text>
           </View>
-        )}
+          <View style={styles.heroStat}>
+            <Text style={styles.heroStatValue}>{profile?.email ?? "Sem email"}</Text>
+            <Text style={styles.heroStatLabel}>Email atual</Text>
+          </View>
+        </View>
       </View>
 
-      {selectedMembership ? (
+      {profile?.is_super_admin ? (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Criar conta esportiva</Text>
+          <Text style={styles.panelText}>
+            Comece por aqui. Depois os outros usuarios podem ser associados a essa conta.
+          </Text>
+
+          <TextInput
+            value={createNameDraft}
+            onChangeText={setCreateNameDraft}
+            placeholder="Nome da conta"
+            placeholderTextColor={Colors.textMuted}
+            style={styles.input}
+          />
+          <TextInput
+            value={createSlugDraft}
+            onChangeText={(value) => setCreateSlugDraft(slugify(value))}
+            placeholder="slug-da-conta"
+            placeholderTextColor={Colors.textMuted}
+            style={styles.input}
+            autoCapitalize="none"
+          />
+
+          <Text style={styles.label}>Modalidade</Text>
+          <View style={styles.chips}>
+            {modalities.map((modality) => (
+              <Pressable
+                key={modality.id}
+                onPress={() => setCreateModalityId(modality.id)}
+                style={[
+                  styles.chip,
+                  createModalityId === modality.id && styles.chipSelected,
+                ]}>
+                <Text
+                  style={[
+                    styles.chipText,
+                    createModalityId === modality.id && styles.chipTextSelected,
+                  ]}>
+                  {modality.name}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          <Text style={styles.label}>Dia da semana</Text>
+          <View style={styles.chips}>
+            {weekdayLabels.map((weekday, index) => (
+              <Pressable
+                key={weekday}
+                onPress={() => setCreateWeekday(String(index))}
+                style={[
+                  styles.chip,
+                  createWeekday === String(index) && styles.chipSelected,
+                ]}>
+                <Text
+                  style={[
+                    styles.chipText,
+                    createWeekday === String(index) && styles.chipTextSelected,
+                  ]}>
+                  {weekday}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          <View style={styles.row}>
+            <TextInput
+              value={createStartsAt}
+              onChangeText={setCreateStartsAt}
+              placeholder="20:30"
+              placeholderTextColor={Colors.textMuted}
+              style={[styles.input, styles.flex]}
+            />
+            <TextInput
+              value={createEndsAt}
+              onChangeText={setCreateEndsAt}
+              placeholder="22:00"
+              placeholderTextColor={Colors.textMuted}
+              style={[styles.input, styles.flex]}
+            />
+          </View>
+
+          <View style={styles.row}>
+            <TextInput
+              value={createMaxPlayers}
+              onChangeText={setCreateMaxPlayers}
+              placeholder="Maximo"
+              placeholderTextColor={Colors.textMuted}
+              keyboardType="number-pad"
+              style={[styles.input, styles.flex]}
+            />
+            <TextInput
+              value={createOpenHours}
+              onChangeText={setCreateOpenHours}
+              placeholder="Abre (h)"
+              placeholderTextColor={Colors.textMuted}
+              keyboardType="number-pad"
+              style={[styles.input, styles.flex]}
+            />
+            <TextInput
+              value={createCloseMinutes}
+              onChangeText={setCreateCloseMinutes}
+              placeholder="Fecha (min)"
+              placeholderTextColor={Colors.textMuted}
+              keyboardType="number-pad"
+              style={[styles.input, styles.flex]}
+            />
+          </View>
+
+          <TextInput
+            value={createPriorityGroups}
+            onChangeText={setCreatePriorityGroups}
+            placeholder="Prioridade 1, Prioridade 2, Lista geral"
+            placeholderTextColor={Colors.textMuted}
+            style={[styles.input, styles.multiline]}
+            multiline
+          />
+
+          <Pressable
+            onPress={() => void handleCreateAccount()}
+            disabled={isCreatingAccount || isAdminLoading}
+            style={[styles.primaryButton, (isCreatingAccount || isAdminLoading) && styles.buttonDisabled]}>
+            {isCreatingAccount ? (
+              <ActivityIndicator color="#ffffff" />
+            ) : (
+              <Text style={styles.primaryButtonText}>Criar conta esportiva</Text>
+            )}
+          </Pressable>
+        </View>
+      ) : null}
+
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>
+          {profile?.is_super_admin ? "Contas esportivas" : "Vinculos do usuario"}
+        </Text>
+        <Pressable onPress={() => void signOut()} style={styles.secondaryButton}>
+          <Text style={styles.secondaryButtonText}>Sair</Text>
+        </Pressable>
+      </View>
+
+      {availableAccounts.length > 0 ? (
+        availableAccounts.map((item) => (
+          <Pressable
+            key={item.account.id}
+            onPress={() => setSelectedAccountId(item.account.id)}
+            style={[
+              styles.panel,
+              selectedAccountId === item.account.id && styles.panelSelected,
+            ]}>
+            <Text style={styles.panelTitle}>{item.account.name}</Text>
+            <Text style={styles.panelText}>{item.roleLabel}</Text>
+            <Text style={styles.panelText}>
+              Grupo prioritario: {item.priorityGroupName ?? "Nao definido"}
+            </Text>
+          </Pressable>
+        ))
+      ) : (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>
+            {profile?.is_super_admin
+              ? "Nenhuma conta esportiva cadastrada ainda"
+              : "Nenhuma conta vinculada ainda"}
+          </Text>
+          <Text style={styles.panelText}>
+            {profile?.is_super_admin
+              ? "Use o formulario acima para cadastrar a primeira conta esportiva."
+              : "Depois do cadastro da conta, vincule este usuario em account_memberships."}
+          </Text>
+        </View>
+      )}
+
+      {selectedAccess ? (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Conta ativa no app</Text>
+          <Text style={styles.sectionTitle}>Conta ativa</Text>
 
           {isOverviewLoading && !overview ? (
-            <View style={styles.loadingCard}>
+            <View style={styles.panel}>
               <ActivityIndicator color={Colors.tint} />
-              <Text style={styles.loadingText}>Carregando configuracao da conta...</Text>
+              <Text style={styles.panelText}>Carregando configuracao da conta...</Text>
             </View>
           ) : null}
 
@@ -274,118 +617,60 @@ export default function TabOneScreen() {
                 </View>
               </View>
 
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>Horario padrao</Text>
-                {overview.schedules.length > 0 ? (
-                  overview.schedules.map((schedule) => (
-                    <View key={schedule.id} style={styles.inlineItem}>
-                      <Text style={styles.inlineValue}>
-                        {formatSchedule(schedule.weekday, schedule.starts_at, schedule.ends_at)}
-                      </Text>
-                    </View>
-                  ))
-                ) : (
-                  <Text style={styles.cardText}>Ainda nao ha periodicidade semanal cadastrada.</Text>
-                )}
+              <View style={styles.panel}>
+                <Text style={styles.panelTitle}>Horario semanal</Text>
+                {overview.schedules.map((schedule) => (
+                  <Text key={schedule.id} style={styles.panelText}>
+                    {formatSchedule(schedule.weekday, schedule.starts_at, schedule.ends_at)}
+                  </Text>
+                ))}
               </View>
 
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>Janela de confirmacao</Text>
-                <Text style={styles.cardText}>
-                  Abre {overview.account.confirmation_open_hours_before}h antes e fecha{" "}
-                  {overview.account.confirmation_close_minutes_before} min antes do evento.
-                </Text>
-                <Text style={styles.cardTitle}>Notificacoes automaticas</Text>
-                <View style={styles.inlineWrap}>
-                  <View style={styles.tag}>
-                    <Text style={styles.tagText}>
-                      Abertura: {formatBooleanLabel(overview.account.auto_notify_confirmation_open)}
-                    </Text>
-                  </View>
-                  <View style={styles.tag}>
-                    <Text style={styles.tagText}>
-                      Lista de espera: {formatBooleanLabel(overview.account.auto_notify_waitlist_changes)}
-                    </Text>
-                  </View>
-                  <View style={styles.tag}>
-                    <Text style={styles.tagText}>
-                      Atualizacoes: {formatBooleanLabel(overview.account.auto_notify_event_updates)}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>Grupos prioritarios</Text>
-                <View style={styles.inlineWrap}>
+              <View style={styles.panel}>
+                <Text style={styles.panelTitle}>Grupos prioritarios</Text>
+                <View style={styles.chips}>
                   {overview.priorityGroups.map((group) => (
-                    <View key={group.id} style={styles.priorityGroupCard}>
-                      <View
-                        style={[
-                          styles.prioritySwatch,
-                          { backgroundColor: group.color_hex ?? Colors.surfaceMuted },
-                        ]}
-                      />
-                      <Text style={styles.priorityGroupName}>{group.name}</Text>
-                      <Text style={styles.priorityGroupMeta}>Ordem {group.priority_rank}</Text>
+                    <View key={group.id} style={styles.tag}>
+                      <Text style={styles.tagText}>
+                        {group.priority_rank}. {group.name}
+                      </Text>
                     </View>
                   ))}
                 </View>
               </View>
 
               {canManageAccount ? (
-                <View style={styles.card}>
-                  <Text style={styles.cardTitle}>Editar conta esportiva</Text>
-                  <Text style={styles.cardText}>
-                    Este corte libera a manutencao basica da conta ativa. O cadastro global de
-                    modalidades fica para o proximo passo de admin.
-                  </Text>
-
-                  <View style={styles.field}>
-                    <Text style={styles.label}>Nome da conta</Text>
+                <View style={styles.panel}>
+                  <Text style={styles.panelTitle}>Editar conta esportiva</Text>
+                  <TextInput
+                    value={accountNameDraft}
+                    onChangeText={setAccountNameDraft}
+                    style={styles.input}
+                  />
+                  <View style={styles.row}>
                     <TextInput
-                      onChangeText={setAccountNameDraft}
-                      style={styles.input}
-                      value={accountNameDraft}
-                    />
-                  </View>
-
-                  <View style={styles.fieldRow}>
-                    <View style={styles.fieldColumn}>
-                      <Text style={styles.label}>Limite por evento</Text>
-                      <TextInput
-                        keyboardType="number-pad"
-                        onChangeText={setMaxPlayersDraft}
-                        style={styles.input}
-                        value={maxPlayersDraft}
-                      />
-                    </View>
-
-                    <View style={styles.fieldColumn}>
-                      <Text style={styles.label}>Abre com antecedencia (h)</Text>
-                      <TextInput
-                        keyboardType="number-pad"
-                        onChangeText={setOpenHoursDraft}
-                        style={styles.input}
-                        value={openHoursDraft}
-                      />
-                    </View>
-                  </View>
-
-                  <View style={styles.field}>
-                    <Text style={styles.label}>Fecha antes do evento (min)</Text>
-                    <TextInput
+                      value={maxPlayersDraft}
+                      onChangeText={setMaxPlayersDraft}
                       keyboardType="number-pad"
-                      onChangeText={setCloseMinutesDraft}
-                      style={styles.input}
+                      style={[styles.input, styles.flex]}
+                    />
+                    <TextInput
+                      value={openHoursDraft}
+                      onChangeText={setOpenHoursDraft}
+                      keyboardType="number-pad"
+                      style={[styles.input, styles.flex]}
+                    />
+                    <TextInput
                       value={closeMinutesDraft}
+                      onChangeText={setCloseMinutesDraft}
+                      keyboardType="number-pad"
+                      style={[styles.input, styles.flex]}
                     />
                   </View>
-
                   <Pressable
-                    disabled={isSavingAccount}
                     onPress={() => void handleSaveAccount()}
-                    style={[styles.primaryButton, isSavingAccount && styles.primaryButtonDisabled]}>
+                    disabled={isSavingAccount}
+                    style={[styles.primaryButton, isSavingAccount && styles.buttonDisabled]}>
                     {isSavingAccount ? (
                       <ActivityIndicator color="#ffffff" />
                     ) : (
@@ -399,279 +684,67 @@ export default function TabOneScreen() {
         </View>
       ) : null}
 
-      {error || overviewError ? (
-        <View style={styles.errorCard}>
-          <Text style={styles.errorTitle}>Pendencia de setup</Text>
-          <Text style={styles.errorText}>{error ?? overviewError}</Text>
+      {error || overviewError || message ? (
+        <View
+          style={[
+            styles.messageCard,
+            message?.tone === "success" ? styles.messageSuccess : styles.messageError,
+          ]}>
+          <Text
+            style={[
+              styles.messageText,
+              message?.tone === "success" ? styles.messageTextSuccess : styles.messageTextError,
+            ]}>
+            {message?.text ?? error ?? overviewError}
+          </Text>
         </View>
       ) : null}
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Proximo corte do produto</Text>
-        <Text style={styles.cardText}>
-          A tela `Agenda` ainda usa dados mockados. Ela vai migrar para eventos reais no M3,
-          junto com confirmacao de presenca e fila por prioridade.
-        </Text>
-      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  content: {
-    padding: 20,
-    paddingBottom: 32,
-    gap: 18,
-  },
+  screen: { flex: 1, backgroundColor: Colors.background },
+  content: { padding: 20, paddingBottom: 32, gap: 16 },
   hero: {
-    position: "relative",
-    overflow: "hidden",
     borderRadius: 28,
     backgroundColor: Colors.surfaceStrong,
     padding: 24,
-    gap: 14,
-  },
-  heroHalo: {
-    position: "absolute",
-    right: -30,
-    top: -20,
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    backgroundColor: "rgba(212, 242, 106, 0.22)",
+    gap: 12,
   },
   kicker: {
     color: Colors.accent,
     fontSize: 12,
     fontWeight: "800",
-    letterSpacing: 1.4,
     textTransform: "uppercase",
+    letterSpacing: 1.2,
   },
-  heroTitle: {
-    color: "#f8fbf5",
-    fontSize: 30,
-    fontWeight: "900",
-    lineHeight: 36,
-  },
-  heroSubtitle: {
-    color: "#d7e5da",
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  heroFooter: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  heroPill: {
+  heroTitle: { color: "#f8fbf5", fontSize: 28, fontWeight: "900", lineHeight: 34 },
+  heroSubtitle: { color: "#d7e5da", fontSize: 15, lineHeight: 22 },
+  heroRow: { flexDirection: "row", gap: 12 },
+  heroStat: {
     flex: 1,
     borderRadius: 18,
     backgroundColor: "rgba(255,255,255,0.08)",
     padding: 14,
     gap: 4,
   },
-  heroPillValue: {
-    color: "#ffffff",
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  heroPillLabel: {
-    color: "#c6d4c9",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  section: {
-    gap: 12,
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-  },
-  sectionTitle: {
-    color: Colors.text,
-    fontSize: 18,
-    fontWeight: "800",
-  },
-  signOutButton: {
-    borderRadius: 999,
-    backgroundColor: Colors.surfaceMuted,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  signOutText: {
-    color: Colors.text,
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-  },
-  membershipCard: {
-    borderRadius: 20,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: 16,
-    gap: 4,
-  },
-  membershipCardSelected: {
-    borderColor: Colors.tint,
-    backgroundColor: "#f3f9ef",
-  },
-  membershipName: {
-    color: Colors.text,
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  membershipMeta: {
-    color: Colors.textMuted,
-    fontSize: 13,
-  },
-  membershipEmpty: {
-    borderRadius: 20,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: 18,
-    gap: 6,
-  },
-  membershipEmptyTitle: {
-    color: Colors.text,
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  membershipEmptyText: {
-    color: Colors.textMuted,
-    fontSize: 14,
-    lineHeight: 21,
-  },
-  loadingCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    borderRadius: 20,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: 18,
-  },
-  loadingText: {
-    color: Colors.textMuted,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  summaryRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  summaryCard: {
-    minWidth: "30%",
-    flexGrow: 1,
-    borderRadius: 20,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: 16,
-    gap: 6,
-  },
-  summaryValue: {
-    color: Colors.text,
-    fontSize: 20,
-    fontWeight: "900",
-  },
-  summaryLabel: {
-    color: Colors.textMuted,
-    fontSize: 12,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-  },
-  card: {
+  heroStatValue: { color: "#ffffff", fontSize: 16, fontWeight: "800" },
+  heroStatLabel: { color: "#c6d4c9", fontSize: 12, fontWeight: "700" },
+  section: { gap: 12 },
+  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  sectionTitle: { color: Colors.text, fontSize: 18, fontWeight: "800" },
+  panel: {
     borderRadius: 24,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
     padding: 18,
-    gap: 12,
-  },
-  cardTitle: {
-    color: Colors.text,
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  cardText: {
-    color: Colors.textMuted,
-    fontSize: 14,
-    lineHeight: 21,
-  },
-  inlineItem: {
-    borderRadius: 16,
-    backgroundColor: Colors.background,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  inlineValue: {
-    color: Colors.text,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  inlineWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
     gap: 10,
   },
-  tag: {
-    borderRadius: 999,
-    backgroundColor: Colors.surfaceMuted,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  tagText: {
-    color: Colors.tint,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  priorityGroupCard: {
-    minWidth: 120,
-    borderRadius: 16,
-    backgroundColor: Colors.background,
-    padding: 14,
-    gap: 6,
-  },
-  prioritySwatch: {
-    width: 28,
-    height: 6,
-    borderRadius: 999,
-  },
-  priorityGroupName: {
-    color: Colors.text,
-    fontSize: 14,
-    fontWeight: "800",
-  },
-  priorityGroupMeta: {
-    color: Colors.textMuted,
-    fontSize: 12,
-  },
-  field: {
-    gap: 6,
-  },
-  fieldRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  fieldColumn: {
-    flex: 1,
-    gap: 6,
-  },
-  label: {
-    color: Colors.text,
-    fontSize: 13,
-    fontWeight: "800",
-  },
+  panelSelected: { borderColor: Colors.tint, backgroundColor: "#f3f9ef" },
+  panelTitle: { color: Colors.text, fontSize: 16, fontWeight: "800" },
+  panelText: { color: Colors.textMuted, fontSize: 14, lineHeight: 21 },
   input: {
     borderRadius: 16,
     borderWidth: 1,
@@ -682,34 +755,64 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 14,
   },
+  multiline: { minHeight: 84, textAlignVertical: "top" },
+  label: { color: Colors.text, fontSize: 13, fontWeight: "800" },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  chip: {
+    borderRadius: 999,
+    backgroundColor: Colors.surfaceMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  chipSelected: { backgroundColor: Colors.tint },
+  chipText: { color: Colors.tint, fontSize: 12, fontWeight: "800" },
+  chipTextSelected: { color: "#ffffff" },
+  row: { flexDirection: "row", gap: 10 },
+  flex: { flex: 1 },
   primaryButton: {
     alignItems: "center",
     borderRadius: 16,
     backgroundColor: Colors.tint,
     paddingVertical: 14,
   },
-  primaryButtonDisabled: {
-    opacity: 0.7,
+  primaryButtonText: { color: "#ffffff", fontSize: 14, fontWeight: "800" },
+  secondaryButton: {
+    borderRadius: 999,
+    backgroundColor: Colors.surfaceMuted,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  primaryButtonText: {
-    color: "#ffffff",
-    fontSize: 14,
-    fontWeight: "800",
+  secondaryButtonText: { color: Colors.text, fontSize: 12, fontWeight: "800" },
+  buttonDisabled: { opacity: 0.7 },
+  summaryRow: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  summaryCard: {
+    minWidth: "30%",
+    flexGrow: 1,
+    borderRadius: 20,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: 16,
+    gap: 6,
   },
-  errorCard: {
-    borderRadius: 18,
-    backgroundColor: "#fff2e6",
-    padding: 14,
-    gap: 4,
+  summaryValue: { color: Colors.text, fontSize: 20, fontWeight: "900" },
+  summaryLabel: {
+    color: Colors.textMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
   },
-  errorTitle: {
-    color: "#8f4f00",
-    fontSize: 14,
-    fontWeight: "800",
+  tag: {
+    borderRadius: 999,
+    backgroundColor: Colors.surfaceMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  errorText: {
-    color: "#8f4f00",
-    fontSize: 13,
-    lineHeight: 20,
-  },
+  tagText: { color: Colors.tint, fontSize: 12, fontWeight: "800" },
+  messageCard: { borderRadius: 16, padding: 14 },
+  messageError: { backgroundColor: "#fff2e6" },
+  messageSuccess: { backgroundColor: "#e8f6ea" },
+  messageText: { fontSize: 13, lineHeight: 20 },
+  messageTextError: { color: "#8f4f00" },
+  messageTextSuccess: { color: "#1f6b37" },
 });
