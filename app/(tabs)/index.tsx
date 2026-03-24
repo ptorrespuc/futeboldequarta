@@ -11,10 +11,13 @@ import {
 
 import Colors from "@/constants/Colors";
 import {
+  createSportModality,
   createSportsAccount,
+  findProfileByEmail,
   getAccountOverview,
   listAllSportsAccounts,
   listSportModalities,
+  upsertAccountMembership,
   updateSportsAccountBasics,
   type AccountOverview,
 } from "@/src/lib/accounts";
@@ -79,6 +82,10 @@ function parsePriorityGroups(value: string) {
     }));
 }
 
+function parsePositions(value: string) {
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+}
+
 function formatSchedule(weekday: number, startsAt: string, endsAt: string) {
   return `${weekdayLabels[weekday] ?? "Dia"} | ${startsAt.slice(0, 5)} as ${endsAt.slice(0, 5)}`;
 }
@@ -94,12 +101,21 @@ export default function HomeScreen() {
   const [isAdminLoading, setIsAdminLoading] = useState(false);
   const [isSavingAccount, setIsSavingAccount] = useState(false);
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+  const [isCreatingModality, setIsCreatingModality] = useState(false);
+  const [isLinkingMember, setIsLinkingMember] = useState(false);
   const [message, setMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
 
   const [accountNameDraft, setAccountNameDraft] = useState("");
   const [maxPlayersDraft, setMaxPlayersDraft] = useState("");
   const [openHoursDraft, setOpenHoursDraft] = useState("");
   const [closeMinutesDraft, setCloseMinutesDraft] = useState("");
+
+  const [createModalityNameDraft, setCreateModalityNameDraft] = useState("");
+  const [createModalitySlugDraft, setCreateModalitySlugDraft] = useState("");
+  const [createModalityPlayersDraft, setCreateModalityPlayersDraft] = useState("5");
+  const [createModalityPositionsDraft, setCreateModalityPositionsDraft] = useState(
+    "Goleiro, Zagueiro, Ala, Meio-campo, Atacante",
+  );
 
   const [createNameDraft, setCreateNameDraft] = useState("");
   const [createSlugDraft, setCreateSlugDraft] = useState("");
@@ -113,10 +129,17 @@ export default function HomeScreen() {
   const [createPriorityGroups, setCreatePriorityGroups] = useState(
     "Prioridade 1, Prioridade 2, Lista geral",
   );
+  const [memberEmailDraft, setMemberEmailDraft] = useState("");
+  const [memberRoleDraft, setMemberRoleDraft] = useState<AccountRole>("player");
+  const [memberPriorityGroupId, setMemberPriorityGroupId] = useState<string | null>(null);
 
   useEffect(() => {
     setCreateSlugDraft(slugify(createNameDraft));
   }, [createNameDraft]);
+
+  useEffect(() => {
+    setCreateModalitySlugDraft(slugify(createModalityNameDraft));
+  }, [createModalityNameDraft]);
 
   useEffect(() => {
     let isActive = true;
@@ -125,6 +148,7 @@ export default function HomeScreen() {
       if (!profile?.is_super_admin) {
         setSuperAdminAccounts([]);
         setModalities([]);
+        setCreateModalityId(null);
         return;
       }
 
@@ -143,7 +167,9 @@ export default function HomeScreen() {
         setSuperAdminAccounts(nextAccounts);
         setModalities(nextModalities);
 
-        if (!createModalityId && nextModalities.length > 0) {
+        if (nextModalities.length === 0) {
+          setCreateModalityId(null);
+        } else if (!createModalityId || !nextModalities.some((item) => item.id === createModalityId)) {
           setCreateModalityId(nextModalities[0].id);
         }
       } catch (loadError) {
@@ -261,12 +287,50 @@ export default function HomeScreen() {
     setCloseMinutesDraft(String(overview.account.confirmation_close_minutes_before));
   }, [overview]);
 
+  useEffect(() => {
+    if (memberRoleDraft !== "player") {
+      setMemberPriorityGroupId(null);
+      return;
+    }
+
+    if (!overview || overview.priorityGroups.length === 0) {
+      setMemberPriorityGroupId(null);
+      return;
+    }
+
+    setMemberPriorityGroupId((currentValue) =>
+      currentValue && overview.priorityGroups.some((group) => group.id === currentValue)
+        ? currentValue
+        : overview.priorityGroups[0].id,
+    );
+  }, [memberRoleDraft, overview]);
+
   async function reloadAccounts() {
     if (!profile?.is_super_admin) {
       return;
     }
 
     setSuperAdminAccounts(await listAllSportsAccounts());
+  }
+
+  async function reloadModalities() {
+    if (!profile?.is_super_admin) {
+      return;
+    }
+
+    const nextModalities = await listSportModalities();
+    setModalities(nextModalities);
+
+    if (nextModalities.length === 0) {
+      setCreateModalityId(null);
+      return;
+    }
+
+    setCreateModalityId((currentValue) =>
+      currentValue && nextModalities.some((item) => item.id === currentValue)
+        ? currentValue
+        : nextModalities[0].id,
+    );
   }
 
   async function handleSaveAccount() {
@@ -390,6 +454,108 @@ export default function HomeScreen() {
     }
   }
 
+  async function handleCreateModality() {
+    if (!profile) {
+      return;
+    }
+
+    const slug = createModalitySlugDraft.trim() || slugify(createModalityNameDraft);
+    const playersPerTeam = Number(createModalityPlayersDraft);
+    const positions = parsePositions(createModalityPositionsDraft);
+
+    if (
+      !createModalityNameDraft.trim() ||
+      !slug ||
+      !Number.isInteger(playersPerTeam) ||
+      playersPerTeam <= 0 ||
+      positions.length === 0
+    ) {
+      setMessage({ tone: "error", text: "Revise os dados da modalidade esportiva." });
+      return;
+    }
+
+    setIsCreatingModality(true);
+    setMessage(null);
+
+    try {
+      const createdModality = await createSportModality({
+        createdBy: profile.id,
+        name: createModalityNameDraft.trim(),
+        slug,
+        playersPerTeam,
+        positions,
+      });
+
+      await reloadModalities();
+      setCreateModalityId(createdModality.id);
+      setCreateModalityNameDraft("");
+      setCreateModalitySlugDraft("");
+      setCreateModalityPlayersDraft("5");
+      setCreateModalityPositionsDraft("Goleiro, Zagueiro, Ala, Meio-campo, Atacante");
+      setMessage({ tone: "success", text: "Modalidade esportiva cadastrada." });
+    } catch (createError) {
+      setMessage({ tone: "error", text: getReadableError(createError) });
+    } finally {
+      setIsCreatingModality(false);
+    }
+  }
+
+  async function handleLinkMember() {
+    if (!selectedAccess || !overview) {
+      return;
+    }
+
+    const normalizedEmail = memberEmailDraft.trim().toLowerCase();
+
+    if (!normalizedEmail || !normalizedEmail.includes("@")) {
+      setMessage({ tone: "error", text: "Informe um email valido para vinculo." });
+      return;
+    }
+
+    if (memberRoleDraft === "player" && !memberPriorityGroupId) {
+      setMessage({
+        tone: "error",
+        text: "Selecione o grupo prioritario do jogador antes de salvar.",
+      });
+      return;
+    }
+
+    setIsLinkingMember(true);
+    setMessage(null);
+
+    try {
+      const linkedProfile = await findProfileByEmail(normalizedEmail);
+
+      if (!linkedProfile) {
+        setMessage({
+          tone: "error",
+          text: "Esse email ainda nao tem perfil. O usuario precisa entrar no app uma vez antes do vinculo.",
+        });
+        return;
+      }
+
+      await upsertAccountMembership({
+        accountId: selectedAccess.account.id,
+        profileId: linkedProfile.id,
+        role: memberRoleDraft,
+        priorityGroupId: memberRoleDraft === "player" ? memberPriorityGroupId : null,
+      });
+
+      setOverview(await getAccountOverview(selectedAccess.account.id));
+      await refresh();
+      setMemberEmailDraft("");
+      setMemberRoleDraft("player");
+      setMessage({
+        tone: "success",
+        text: `${linkedProfile.full_name || linkedProfile.email} vinculado a ${selectedAccess.account.name}.`,
+      });
+    } catch (linkError) {
+      setMessage({ tone: "error", text: getReadableError(linkError) });
+    } finally {
+      setIsLinkingMember(false);
+    }
+  }
+
   const canManageAccount = Boolean(
     profile?.is_super_admin || selectedMembership?.membership.role === "group_admin",
   );
@@ -419,134 +585,192 @@ export default function HomeScreen() {
       </View>
 
       {profile?.is_super_admin ? (
-        <View style={styles.panel}>
-          <Text style={styles.panelTitle}>Criar conta esportiva</Text>
-          <Text style={styles.panelText}>
-            Comece por aqui. Depois os outros usuarios podem ser associados a essa conta.
-          </Text>
+        <>
+          <View style={styles.panel}>
+            <Text style={styles.panelTitle}>Cadastrar modalidade esportiva</Text>
+            <Text style={styles.panelText}>
+              Defina a modalidade base e as posicoes que poderao ser escolhidas nos perfis.
+            </Text>
 
-          <TextInput
-            value={createNameDraft}
-            onChangeText={setCreateNameDraft}
-            placeholder="Nome da conta"
-            placeholderTextColor={Colors.textMuted}
-            style={styles.input}
-          />
-          <TextInput
-            value={createSlugDraft}
-            onChangeText={(value) => setCreateSlugDraft(slugify(value))}
-            placeholder="slug-da-conta"
-            placeholderTextColor={Colors.textMuted}
-            style={styles.input}
-            autoCapitalize="none"
-          />
+            <TextInput
+              value={createModalityNameDraft}
+              onChangeText={setCreateModalityNameDraft}
+              placeholder="Nome da modalidade"
+              placeholderTextColor={Colors.textMuted}
+              style={styles.input}
+            />
+            <TextInput
+              value={createModalitySlugDraft}
+              onChangeText={(value) => setCreateModalitySlugDraft(slugify(value))}
+              placeholder="futebol-society"
+              placeholderTextColor={Colors.textMuted}
+              style={styles.input}
+              autoCapitalize="none"
+            />
+            <TextInput
+              value={createModalityPlayersDraft}
+              onChangeText={setCreateModalityPlayersDraft}
+              placeholder="Jogadores por equipe"
+              placeholderTextColor={Colors.textMuted}
+              keyboardType="number-pad"
+              style={styles.input}
+            />
+            <TextInput
+              value={createModalityPositionsDraft}
+              onChangeText={setCreateModalityPositionsDraft}
+              placeholder="Goleiro, Zagueiro, Ala, Atacante"
+              placeholderTextColor={Colors.textMuted}
+              style={[styles.input, styles.multiline]}
+              multiline
+            />
 
-          <Text style={styles.label}>Modalidade</Text>
-          <View style={styles.chips}>
-            {modalities.map((modality) => (
-              <Pressable
-                key={modality.id}
-                onPress={() => setCreateModalityId(modality.id)}
-                style={[
-                  styles.chip,
-                  createModalityId === modality.id && styles.chipSelected,
-                ]}>
-                <Text
+            <Pressable
+              onPress={() => void handleCreateModality()}
+              disabled={isCreatingModality || isAdminLoading}
+              style={[
+                styles.primaryButton,
+                (isCreatingModality || isAdminLoading) && styles.buttonDisabled,
+              ]}>
+              {isCreatingModality ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <Text style={styles.primaryButtonText}>Cadastrar modalidade</Text>
+              )}
+            </Pressable>
+          </View>
+
+          <View style={styles.panel}>
+            <Text style={styles.panelTitle}>Criar conta esportiva</Text>
+            <Text style={styles.panelText}>
+              Crie a conta primeiro. Depois associe os outros usuarios a ela.
+            </Text>
+
+            <TextInput
+              value={createNameDraft}
+              onChangeText={setCreateNameDraft}
+              placeholder="Nome da conta"
+              placeholderTextColor={Colors.textMuted}
+              style={styles.input}
+            />
+            <TextInput
+              value={createSlugDraft}
+              onChangeText={(value) => setCreateSlugDraft(slugify(value))}
+              placeholder="slug-da-conta"
+              placeholderTextColor={Colors.textMuted}
+              style={styles.input}
+              autoCapitalize="none"
+            />
+
+            <Text style={styles.label}>Modalidade</Text>
+            <View style={styles.chips}>
+              {modalities.map((modality) => (
+                <Pressable
+                  key={modality.id}
+                  onPress={() => setCreateModalityId(modality.id)}
                   style={[
-                    styles.chipText,
-                    createModalityId === modality.id && styles.chipTextSelected,
+                    styles.chip,
+                    createModalityId === modality.id && styles.chipSelected,
                   ]}>
-                  {modality.name}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+                  <Text
+                    style={[
+                      styles.chipText,
+                      createModalityId === modality.id && styles.chipTextSelected,
+                    ]}>
+                    {modality.name}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
 
-          <Text style={styles.label}>Dia da semana</Text>
-          <View style={styles.chips}>
-            {weekdayLabels.map((weekday, index) => (
-              <Pressable
-                key={weekday}
-                onPress={() => setCreateWeekday(String(index))}
-                style={[
-                  styles.chip,
-                  createWeekday === String(index) && styles.chipSelected,
-                ]}>
-                <Text
+            <Text style={styles.label}>Dia da semana</Text>
+            <View style={styles.chips}>
+              {weekdayLabels.map((weekday, index) => (
+                <Pressable
+                  key={weekday}
+                  onPress={() => setCreateWeekday(String(index))}
                   style={[
-                    styles.chipText,
-                    createWeekday === String(index) && styles.chipTextSelected,
+                    styles.chip,
+                    createWeekday === String(index) && styles.chipSelected,
                   ]}>
-                  {weekday}
-                </Text>
-              </Pressable>
-            ))}
+                  <Text
+                    style={[
+                      styles.chipText,
+                      createWeekday === String(index) && styles.chipTextSelected,
+                    ]}>
+                    {weekday}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={styles.row}>
+              <TextInput
+                value={createStartsAt}
+                onChangeText={setCreateStartsAt}
+                placeholder="20:30"
+                placeholderTextColor={Colors.textMuted}
+                style={[styles.input, styles.flex]}
+              />
+              <TextInput
+                value={createEndsAt}
+                onChangeText={setCreateEndsAt}
+                placeholder="22:00"
+                placeholderTextColor={Colors.textMuted}
+                style={[styles.input, styles.flex]}
+              />
+            </View>
+
+            <View style={styles.row}>
+              <TextInput
+                value={createMaxPlayers}
+                onChangeText={setCreateMaxPlayers}
+                placeholder="Maximo"
+                placeholderTextColor={Colors.textMuted}
+                keyboardType="number-pad"
+                style={[styles.input, styles.flex]}
+              />
+              <TextInput
+                value={createOpenHours}
+                onChangeText={setCreateOpenHours}
+                placeholder="Abre (h)"
+                placeholderTextColor={Colors.textMuted}
+                keyboardType="number-pad"
+                style={[styles.input, styles.flex]}
+              />
+              <TextInput
+                value={createCloseMinutes}
+                onChangeText={setCreateCloseMinutes}
+                placeholder="Fecha (min)"
+                placeholderTextColor={Colors.textMuted}
+                keyboardType="number-pad"
+                style={[styles.input, styles.flex]}
+              />
+            </View>
+
+            <TextInput
+              value={createPriorityGroups}
+              onChangeText={setCreatePriorityGroups}
+              placeholder="Prioridade 1, Prioridade 2, Lista geral"
+              placeholderTextColor={Colors.textMuted}
+              style={[styles.input, styles.multiline]}
+              multiline
+            />
+
+            <Pressable
+              onPress={() => void handleCreateAccount()}
+              disabled={isCreatingAccount || isAdminLoading}
+              style={[
+                styles.primaryButton,
+                (isCreatingAccount || isAdminLoading) && styles.buttonDisabled,
+              ]}>
+              {isCreatingAccount ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <Text style={styles.primaryButtonText}>Criar conta esportiva</Text>
+              )}
+            </Pressable>
           </View>
-
-          <View style={styles.row}>
-            <TextInput
-              value={createStartsAt}
-              onChangeText={setCreateStartsAt}
-              placeholder="20:30"
-              placeholderTextColor={Colors.textMuted}
-              style={[styles.input, styles.flex]}
-            />
-            <TextInput
-              value={createEndsAt}
-              onChangeText={setCreateEndsAt}
-              placeholder="22:00"
-              placeholderTextColor={Colors.textMuted}
-              style={[styles.input, styles.flex]}
-            />
-          </View>
-
-          <View style={styles.row}>
-            <TextInput
-              value={createMaxPlayers}
-              onChangeText={setCreateMaxPlayers}
-              placeholder="Maximo"
-              placeholderTextColor={Colors.textMuted}
-              keyboardType="number-pad"
-              style={[styles.input, styles.flex]}
-            />
-            <TextInput
-              value={createOpenHours}
-              onChangeText={setCreateOpenHours}
-              placeholder="Abre (h)"
-              placeholderTextColor={Colors.textMuted}
-              keyboardType="number-pad"
-              style={[styles.input, styles.flex]}
-            />
-            <TextInput
-              value={createCloseMinutes}
-              onChangeText={setCreateCloseMinutes}
-              placeholder="Fecha (min)"
-              placeholderTextColor={Colors.textMuted}
-              keyboardType="number-pad"
-              style={[styles.input, styles.flex]}
-            />
-          </View>
-
-          <TextInput
-            value={createPriorityGroups}
-            onChangeText={setCreatePriorityGroups}
-            placeholder="Prioridade 1, Prioridade 2, Lista geral"
-            placeholderTextColor={Colors.textMuted}
-            style={[styles.input, styles.multiline]}
-            multiline
-          />
-
-          <Pressable
-            onPress={() => void handleCreateAccount()}
-            disabled={isCreatingAccount || isAdminLoading}
-            style={[styles.primaryButton, (isCreatingAccount || isAdminLoading) && styles.buttonDisabled]}>
-            {isCreatingAccount ? (
-              <ActivityIndicator color="#ffffff" />
-            ) : (
-              <Text style={styles.primaryButtonText}>Criar conta esportiva</Text>
-            )}
-          </Pressable>
-        </View>
+        </>
       ) : null}
 
       <View style={styles.sectionHeader}>
@@ -638,6 +862,82 @@ export default function HomeScreen() {
                   ))}
                 </View>
               </View>
+
+              {profile?.is_super_admin ? (
+                <View style={styles.panel}>
+                  <Text style={styles.panelTitle}>Vincular usuario a esta conta</Text>
+                  <Text style={styles.panelText}>
+                    Use um email que ja tenha entrado no app ao menos uma vez.
+                  </Text>
+
+                  <TextInput
+                    value={memberEmailDraft}
+                    onChangeText={setMemberEmailDraft}
+                    placeholder="email@exemplo.com"
+                    placeholderTextColor={Colors.textMuted}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                    style={styles.input}
+                  />
+
+                  <Text style={styles.label}>Papel na conta</Text>
+                  <View style={styles.chips}>
+                    {(Object.entries(roleLabels) as [AccountRole, string][]).map(([role, label]) => (
+                      <Pressable
+                        key={role}
+                        onPress={() => setMemberRoleDraft(role)}
+                        style={[
+                          styles.chip,
+                          memberRoleDraft === role && styles.chipSelected,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.chipText,
+                            memberRoleDraft === role && styles.chipTextSelected,
+                          ]}>
+                          {label}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  {memberRoleDraft === "player" ? (
+                    <>
+                      <Text style={styles.label}>Grupo prioritario</Text>
+                      <View style={styles.chips}>
+                        {overview.priorityGroups.map((group) => (
+                          <Pressable
+                            key={group.id}
+                            onPress={() => setMemberPriorityGroupId(group.id)}
+                            style={[
+                              styles.chip,
+                              memberPriorityGroupId === group.id && styles.chipSelected,
+                            ]}>
+                            <Text
+                              style={[
+                                styles.chipText,
+                                memberPriorityGroupId === group.id && styles.chipTextSelected,
+                              ]}>
+                              {group.name}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </>
+                  ) : null}
+
+                  <Pressable
+                    onPress={() => void handleLinkMember()}
+                    disabled={isLinkingMember}
+                    style={[styles.primaryButton, isLinkingMember && styles.buttonDisabled]}>
+                    {isLinkingMember ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <Text style={styles.primaryButtonText}>Vincular usuario</Text>
+                    )}
+                  </Pressable>
+                </View>
+              ) : null}
 
               {canManageAccount ? (
                 <View style={styles.panel}>

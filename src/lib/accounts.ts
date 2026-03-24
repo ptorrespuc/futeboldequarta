@@ -1,5 +1,6 @@
 import { supabase } from "@/src/lib/supabase";
 import type {
+  AccountRole,
   AccountMembership,
   AccountPriorityGroup,
   AccountSchedule,
@@ -47,6 +48,14 @@ export type CreateSportsAccountInput = {
   }>;
 };
 
+export type CreateSportModalityInput = {
+  createdBy: string;
+  name: string;
+  slug: string;
+  playersPerTeam: number;
+  positions: string[];
+};
+
 function throwIfError(error: { message: string } | null) {
   if (error) {
     throw new Error(error.message);
@@ -73,6 +82,17 @@ export async function listAllSportsAccounts(): Promise<SportsAccount[]> {
 
   throwIfError(error);
   return (data ?? []) as SportsAccount[];
+}
+
+export async function findProfileByEmail(email: string): Promise<Profile | null> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, full_name, email, photo_url, is_super_admin, created_at, updated_at")
+    .ilike("email", email.trim().toLowerCase())
+    .maybeSingle();
+
+  throwIfError(error);
+  return (data as Profile | null) ?? null;
 }
 
 export async function getAccountOverview(accountId: string): Promise<AccountOverview> {
@@ -293,6 +313,45 @@ export async function updateSportsAccountBasics(input: {
   throwIfError(error);
 }
 
+export async function createSportModality(input: CreateSportModalityInput) {
+  const { data: modalityData, error: modalityError } = await supabase
+    .from("sport_modalities")
+    .insert({
+      name: input.name,
+      slug: input.slug,
+      players_per_team: input.playersPerTeam,
+      created_by: input.createdBy,
+    })
+    .select("id, name, slug, players_per_team, created_by, created_at, updated_at")
+    .single();
+
+  throwIfError(modalityError);
+
+  const modality = modalityData as SportModality;
+  const uniquePositions = [...new Set(input.positions.map((position) => position.trim()).filter(Boolean))];
+
+  if (uniquePositions.length > 0) {
+    const { error: positionError } = await supabase.from("modality_positions").insert(
+      uniquePositions.map((position, index) => ({
+        modality_id: modality.id,
+        name: position,
+        code: position
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .replace(/-{2,}/g, "-"),
+        sort_order: index + 1,
+      })),
+    );
+
+    throwIfError(positionError);
+  }
+
+  return modality;
+}
+
 export async function createSportsAccount(input: CreateSportsAccountInput) {
   const { data: accountData, error: accountError } = await supabase
     .from("sports_accounts")
@@ -355,6 +414,29 @@ export async function createSportsAccount(input: CreateSportsAccountInput) {
   throwIfError(priorityGroupsError);
 
   return account;
+}
+
+export async function upsertAccountMembership(input: {
+  accountId: string;
+  profileId: string;
+  role: AccountRole;
+  priorityGroupId: string | null;
+}) {
+  const { error } = await supabase.from("account_memberships").upsert(
+    {
+      account_id: input.accountId,
+      profile_id: input.profileId,
+      role: input.role,
+      priority_group_id: input.priorityGroupId,
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    },
+    {
+      onConflict: "account_id,profile_id",
+    },
+  );
+
+  throwIfError(error);
 }
 
 export async function updateProfileBasics(input: {
