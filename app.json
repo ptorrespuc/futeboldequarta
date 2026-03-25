@@ -9,6 +9,12 @@
     "owner": "sgu_puc-rio",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/85228ab7-2f3e-4723-9fc8-8f76a8a89d2a"
+    },
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
