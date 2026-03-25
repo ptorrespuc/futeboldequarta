@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -35,10 +36,12 @@ import {
   ensurePlayerLoginAccess,
   findProfileByEmail,
   getCurrentWeeklyEvent,
+  getLatestWeeklyEvent,
   listAllAccountMemberships,
   listAccountPlayers,
   listAccountPollTemplates,
   listEventPolls,
+  listEventPollResults,
   getAccountOverview,
   listWeeklyEventParticipants,
   listModalityPositions,
@@ -53,6 +56,7 @@ import {
   upsertAccountMembership,
   updateSportsAccountBasics,
   type AccountOverview,
+  type EventPollResultSummary,
   type WeeklyEventParticipantItem,
 } from "@/src/lib/accounts";
 import {
@@ -222,6 +226,93 @@ function formatSchedule(weekday: number, startsAt: string, endsAt: string) {
   return `${weekdayLabels[weekday] ?? "Dia"} | ${startsAt.slice(0, 5)} as ${endsAt.slice(0, 5)}`;
 }
 
+function getPlayerInitials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+function formatWeeklyEventState(status: Event["status"] | null) {
+  if (!status) {
+    return "Evento nao criado";
+  }
+
+  if (status === "draft") {
+    return "Evento criado";
+  }
+
+  if (status === "published") {
+    return "Evento fechado";
+  }
+
+  if (status === "completed") {
+    return "Evento encerrado";
+  }
+
+  return "Evento cancelado";
+}
+
+function getWeeklyEventStateIndex(status: Event["status"] | null) {
+  if (!status) {
+    return 0;
+  }
+
+  if (status === "draft") {
+    return 1;
+  }
+
+  if (status === "published") {
+    return 2;
+  }
+
+  if (status === "completed") {
+    return 3;
+  }
+
+  return 0;
+}
+
+function PlayerAvatar({
+  name,
+  photoUrl,
+  size = 44,
+}: {
+  name: string;
+  photoUrl: string | null;
+  size?: number;
+}) {
+  if (photoUrl) {
+    return (
+      <Image
+        source={{ uri: photoUrl }}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: Colors.surfaceMuted,
+        }}
+      />
+    );
+  }
+
+  return (
+    <View
+      style={[
+        styles.avatarFallback,
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+        },
+      ]}>
+      <Text style={styles.avatarFallbackText}>{getPlayerInitials(name)}</Text>
+    </View>
+  );
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, context: string) {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
@@ -263,6 +354,7 @@ export default function HomeScreen() {
   const [weeklyEvent, setWeeklyEvent] = useState<Event | null>(null);
   const [weeklyParticipants, setWeeklyParticipants] = useState<WeeklyEventParticipantItem[]>([]);
   const [weeklyEventPolls, setWeeklyEventPolls] = useState<EventPoll[]>([]);
+  const [weeklyPollResults, setWeeklyPollResults] = useState<EventPollResultSummary[]>([]);
   const [weeklyPriorityFilter, setWeeklyPriorityFilter] = useState<string>("all");
   const [weeklyActionId, setWeeklyActionId] = useState<string | null>(null);
   const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(false);
@@ -327,6 +419,12 @@ export default function HomeScreen() {
   const [pollDescriptionDraft, setPollDescriptionDraft] = useState("");
   const [pollSelectionModeDraft, setPollSelectionModeDraft] =
     useState<PollSelectionMode>("event_participant");
+
+  useEffect(() => {
+    if (!isSuperAdmin) {
+      setWorkspaceTab("weekly");
+    }
+  }, [isSuperAdmin, selectedAccountId]);
 
   useEffect(() => {
     if (adminModal?.type === "account" && adminModal.mode === "edit") {
@@ -509,13 +607,14 @@ export default function HomeScreen() {
         profile?.is_super_admin || selectedMembership?.membership.role === "group_admin",
       );
 
-      if (!selectedAccessAccountId || !selectedOverviewModalityId || !canManageCurrentAccount) {
+      if (!selectedAccessAccountId || !selectedOverviewModalityId) {
         setAccountPlayers([]);
         setAccountPollTemplates([]);
         setModalityPositions([]);
         setWeeklyEvent(null);
         setWeeklyParticipants([]);
         setWeeklyEventPolls([]);
+        setWeeklyPollResults([]);
         setIsWorkspaceLoading(false);
         return;
       }
@@ -525,9 +624,15 @@ export default function HomeScreen() {
       try {
         const [nextPlayers, nextPollTemplates, nextPositions, nextWeeklyData] = await withTimeout(
           Promise.all([
-            listAccountPlayers(selectedAccessAccountId, selectedOverviewModalityId),
-            listAccountPollTemplates(selectedAccessAccountId),
-            listModalityPositions(selectedOverviewModalityId),
+            canManageCurrentAccount
+              ? listAccountPlayers(selectedAccessAccountId, selectedOverviewModalityId)
+              : Promise.resolve([] as AccountPlayerAdminItem[]),
+            canManageCurrentAccount
+              ? listAccountPollTemplates(selectedAccessAccountId)
+              : Promise.resolve([] as PollTemplate[]),
+            canManageCurrentAccount
+              ? listModalityPositions(selectedOverviewModalityId)
+              : Promise.resolve([] as ModalityPosition[]),
             loadWeeklyWorkspaceData(selectedAccessAccountId, selectedOverviewModalityId),
           ]),
           8000,
@@ -544,6 +649,7 @@ export default function HomeScreen() {
         setWeeklyEvent(nextWeeklyData.nextWeeklyEvent);
         setWeeklyParticipants(nextWeeklyData.nextWeeklyParticipants);
         setWeeklyEventPolls(nextWeeklyData.nextWeeklyEventPolls);
+        setWeeklyPollResults(nextWeeklyData.nextWeeklyPollResults);
       } catch (loadError) {
         if (isActive) {
           setMessage({ tone: "error", text: getReadableError(loadError) });
@@ -644,25 +750,29 @@ export default function HomeScreen() {
   }, [membershipRoleModalDraft]);
 
   async function loadWeeklyWorkspaceData(accountId: string, modalityId: string) {
-    const nextWeeklyEvent = await getCurrentWeeklyEvent(accountId);
+    const openWeeklyEvent = await getCurrentWeeklyEvent(accountId);
+    const nextWeeklyEvent = openWeeklyEvent ?? (await getLatestWeeklyEvent(accountId));
 
     if (!nextWeeklyEvent) {
       return {
         nextWeeklyEvent: null,
         nextWeeklyParticipants: [] as WeeklyEventParticipantItem[],
         nextWeeklyEventPolls: [] as EventPoll[],
+        nextWeeklyPollResults: [] as EventPollResultSummary[],
       };
     }
 
-    const [nextWeeklyParticipants, nextWeeklyEventPolls] = await Promise.all([
+    const [nextWeeklyParticipants, nextWeeklyEventPolls, nextWeeklyPollResults] = await Promise.all([
       listWeeklyEventParticipants(nextWeeklyEvent.id, modalityId),
       listEventPolls(nextWeeklyEvent.id),
+      listEventPollResults(nextWeeklyEvent.id),
     ]);
 
     return {
       nextWeeklyEvent,
       nextWeeklyParticipants,
       nextWeeklyEventPolls,
+      nextWeeklyPollResults,
     };
   }
 
@@ -710,13 +820,24 @@ export default function HomeScreen() {
       setWeeklyEvent(null);
       setWeeklyParticipants([]);
       setWeeklyEventPolls([]);
+      setWeeklyPollResults([]);
       return;
     }
 
+    const canManageCurrentAccount = Boolean(
+      profile?.is_super_admin || selectedMembership?.membership.role === "group_admin",
+    );
+
     const [nextPlayers, nextPollTemplates, nextPositions, nextWeeklyData] = await Promise.all([
-      listAccountPlayers(selectedAccess.account.id, overview.account.modality_id),
-      listAccountPollTemplates(selectedAccess.account.id),
-      listModalityPositions(overview.account.modality_id),
+      canManageCurrentAccount
+        ? listAccountPlayers(selectedAccess.account.id, overview.account.modality_id)
+        : Promise.resolve([] as AccountPlayerAdminItem[]),
+      canManageCurrentAccount
+        ? listAccountPollTemplates(selectedAccess.account.id)
+        : Promise.resolve([] as PollTemplate[]),
+      canManageCurrentAccount
+        ? listModalityPositions(overview.account.modality_id)
+        : Promise.resolve([] as ModalityPosition[]),
       loadWeeklyWorkspaceData(selectedAccess.account.id, overview.account.modality_id),
     ]);
 
@@ -726,6 +847,7 @@ export default function HomeScreen() {
     setWeeklyEvent(nextWeeklyData.nextWeeklyEvent);
     setWeeklyParticipants(nextWeeklyData.nextWeeklyParticipants);
     setWeeklyEventPolls(nextWeeklyData.nextWeeklyEventPolls);
+    setWeeklyPollResults(nextWeeklyData.nextWeeklyPollResults);
   }
 
   function resetModalityForm() {
@@ -1949,7 +2071,7 @@ export default function HomeScreen() {
   }
 
   async function handleCreateWeeklyCall() {
-    if (!selectedAccess || !overview || !profile) {
+    if (!selectedAccess || !overview || !profile || !canManageWeeklyList) {
       return;
     }
 
@@ -1982,7 +2104,7 @@ export default function HomeScreen() {
   }
 
   async function handleAddPlayerToWeeklyList(item: AccountPlayerAdminItem) {
-    if (!weeklyEvent || !profile) {
+    if (!weeklyEvent || !profile || !canManageWeeklyList) {
       return;
     }
 
@@ -2006,6 +2128,10 @@ export default function HomeScreen() {
   }
 
   async function handleRemovePlayerFromWeeklyList(item: WeeklyEventParticipantItem) {
+    if (!canManageWeeklyList) {
+      return;
+    }
+
     setWeeklyActionId(item.participant.id);
     setMessage(null);
 
@@ -2024,7 +2150,7 @@ export default function HomeScreen() {
   }
 
   async function handleCloseWeeklyList() {
-    if (!weeklyEvent) {
+    if (!weeklyEvent || !canManageWeeklyList) {
       return;
     }
 
@@ -2043,7 +2169,7 @@ export default function HomeScreen() {
   }
 
   async function handleCreateEventPolls() {
-    if (!selectedAccess || !weeklyEvent || !profile) {
+    if (!selectedAccess || !weeklyEvent || !profile || !canManageWeeklyPolls) {
       return;
     }
 
@@ -2067,7 +2193,7 @@ export default function HomeScreen() {
   }
 
   async function handleCompleteWeeklyEvent() {
-    if (!weeklyEvent) {
+    if (!weeklyEvent || !canManageWeeklyList) {
       return;
     }
 
@@ -3194,8 +3320,389 @@ export default function HomeScreen() {
     );
   }
 
+  function renderWeeklyPollResults() {
+    if (!weeklyEvent || weeklyEventPolls.length === 0) {
+      return null;
+    }
+
+    return (
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Resultados das enquetes</Text>
+        <Text style={styles.panelText}>
+          Essa area resume as enquetes do evento atual. Quando ainda nao houver votos, o BoraJogar mostra a enquete sem pontuacao.
+        </Text>
+
+        {weeklyPollResults.map((summary) => (
+          <View key={summary.poll.id} style={styles.pollResultCard}>
+            <Text style={styles.workspaceTitle}>{summary.poll.title}</Text>
+            <Text style={styles.panelText}>
+              {summary.poll.status === "open"
+                ? "Aberta para votos"
+                : summary.poll.status === "closed"
+                  ? "Encerrada"
+                  : "Preparada para o evento"}{" "}
+              | {summary.totalVotes} voto(s)
+            </Text>
+            {summary.poll.description ? (
+              <Text style={styles.panelText}>{summary.poll.description}</Text>
+            ) : null}
+
+            {summary.entries.length > 0 ? (
+              summary.entries.map((entry, index) => (
+                <View key={entry.id} style={styles.pollResultEntry}>
+                  <View style={styles.pollResultLeft}>
+                    <Text style={styles.pollResultRank}>{index + 1}</Text>
+                    <PlayerAvatar name={entry.label} photoUrl={entry.photoUrl} size={36} />
+                    <View style={styles.flex}>
+                      <Text style={styles.selectionCardTitle}>{entry.label}</Text>
+                      {entry.description ? (
+                        <Text style={styles.selectionCardText}>{entry.description}</Text>
+                      ) : null}
+                    </View>
+                  </View>
+                  <Text style={styles.pollResultVotes}>{entry.votes}</Text>
+                </View>
+              ))
+            ) : (
+              <Text style={styles.panelText}>Essa enquete ainda nao recebeu votos.</Text>
+            )}
+          </View>
+        ))}
+      </View>
+    );
+  }
+
+  function renderWeeklyWorkspace() {
+    const weeklyStates = [
+      "Evento nao criado",
+      "Evento criado",
+      "Evento fechado",
+      "Evento encerrado",
+    ];
+    const activeStateIndex = getWeeklyEventStateIndex(weeklyEvent?.status ?? null);
+    const canCreateNewWeeklyEvent = !weeklyEvent || weeklyEvent.status === "completed";
+
+    return (
+      <>
+        <View style={styles.inlineHeader}>
+          <View style={styles.inlineHeaderContent}>
+            <Text style={styles.workspaceTitle}>Gestao semanal da lista</Text>
+            <Text style={styles.panelText}>
+              Esse e o fluxo principal do grupo: abrir a chamada, montar a lista, fechar, criar as enquetes e encerrar o evento.
+            </Text>
+          </View>
+          {canCreateNewWeeklyEvent && canManageWeeklyList ? (
+            <Pressable
+              onPress={() => void handleCreateWeeklyCall()}
+              disabled={weeklyActionId === "create"}
+              style={[styles.secondaryButton, weeklyActionId === "create" && styles.buttonDisabled]}>
+              <Text style={styles.secondaryButtonText}>
+                {weeklyActionId === "create" ? "Criando..." : "Criar chamada para jogo"}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        <View style={styles.stateRail}>
+          {weeklyStates.map((stateLabel, index) => {
+            const isCompleted = index < activeStateIndex;
+            const isActive = index === activeStateIndex;
+
+            return (
+              <View
+                key={stateLabel}
+                style={[
+                  styles.stateStep,
+                  isCompleted && styles.stateStepCompleted,
+                  isActive && styles.stateStepActive,
+                ]}>
+                <Text
+                  style={[
+                    styles.stateStepLabel,
+                    (isCompleted || isActive) && styles.stateStepLabelActive,
+                  ]}>
+                  {index + 1}. {stateLabel}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+
+        {!weeklyEvent ? (
+          <View style={styles.listCard}>
+            <Text style={styles.panelTitle}>Nenhum evento aberto nesta semana</Text>
+            <Text style={styles.panelText}>
+              Quando a chamada for criada, o BoraJogar usa o proximo horario do grupo e ja inclui quem esta marcado para entrar sempre.
+            </Text>
+          </View>
+        ) : (
+          <>
+            <View style={styles.listCard}>
+              <Text style={styles.panelTitle}>{weeklyEvent.title}</Text>
+              <Text style={styles.panelText}>Grupo: {selectedAccess?.account.name ?? overview?.account.name}</Text>
+              <Text style={styles.panelText}>
+                Jogo:{" "}
+                {new Date(weeklyEvent.starts_at).toLocaleString("pt-BR", {
+                  dateStyle: "short",
+                  timeStyle: "short",
+                })}{" "}
+                ate{" "}
+                {new Date(weeklyEvent.ends_at).toLocaleTimeString("pt-BR", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </Text>
+              <Text style={styles.panelText}>Estado atual: {formatWeeklyEventState(weeklyEvent.status)}</Text>
+              <Text style={styles.panelText}>
+                Na lista: {activeWeeklyParticipants.length} / {overview?.account.max_players_per_event ?? 0}
+              </Text>
+              <Text style={styles.panelText}>Enquetes do evento: {weeklyEventPolls.length}</Text>
+            </View>
+
+            {weeklyEvent.status === "draft" ? (
+              <View style={styles.inlineHeader}>
+                <View style={styles.inlineHeaderContent}>
+                  <Text style={styles.workspaceTitle}>Evento criado e lista aberta</Text>
+                  <Text style={styles.panelText}>
+                    Enquanto a chamada estiver aberta, voce pode incluir ou retirar jogadores mantendo a ordem de prioridade definida para essa conta.
+                  </Text>
+                </View>
+                {canManageWeeklyList ? (
+                  <Pressable
+                    onPress={confirmCloseWeeklyList}
+                    disabled={weeklyActionId === "close"}
+                    style={[styles.secondaryButton, weeklyActionId === "close" && styles.buttonDisabled]}>
+                    <Text style={styles.secondaryButtonText}>
+                      {weeklyActionId === "close" ? "Fechando..." : "Fechar lista"}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : weeklyEvent.status === "published" ? (
+              <View style={styles.inlineHeader}>
+                <View style={styles.inlineHeaderContent}>
+                  <Text style={styles.workspaceTitle}>Evento fechado</Text>
+                  <Text style={styles.panelText}>
+                    A lista esta fechada. Agora as enquetes podem ser criadas e o evento pode ser encerrado quando terminar.
+                  </Text>
+                </View>
+                <View style={styles.listActions}>
+                  {canManageWeeklyPolls ? (
+                    <Pressable
+                      onPress={() => void handleCreateEventPolls()}
+                      disabled={weeklyActionId === "polls" || weeklyEventPolls.length > 0}
+                      style={[
+                        styles.inlineActionButton,
+                        (weeklyActionId === "polls" || weeklyEventPolls.length > 0) && styles.buttonDisabled,
+                      ]}>
+                      <Text style={styles.inlineActionText}>
+                        {weeklyEventPolls.length > 0
+                          ? "Enquetes criadas"
+                          : weeklyActionId === "polls"
+                            ? "Criando..."
+                            : "Criar enquetes"}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  {canManageWeeklyList ? (
+                    <Pressable
+                      onPress={confirmCompleteWeeklyEvent}
+                      disabled={weeklyActionId === "complete"}
+                      style={[styles.inlineDangerButton, weeklyActionId === "complete" && styles.buttonDisabled]}>
+                      <Text style={styles.inlineDangerText}>
+                        {weeklyActionId === "complete" ? "Encerrando..." : "Encerrar evento"}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+            ) : (
+              <View style={styles.listCard}>
+                <Text style={styles.workspaceTitle}>Evento encerrado</Text>
+                <Text style={styles.panelText}>
+                  O evento foi concluido. A lista ficou congelada e as enquetes foram fechadas.
+                </Text>
+              </View>
+            )}
+
+            {weeklyEvent.status === "draft" && canManageWeeklyList ? (
+              <View style={styles.weeklyBoard}>
+                <View style={styles.weeklyColumn}>
+                  <Text style={styles.workspaceTitle}>Na lista</Text>
+                  <Text style={styles.panelText}>
+                    Jogadores ja inseridos na chamada atual, ordenados pela prioridade da conta.
+                  </Text>
+
+                  {activeWeeklyParticipants.length > 0 ? (
+                    activeWeeklyParticipants.map((item) => (
+                      <View key={item.participant.id} style={styles.listCard}>
+                        <View style={styles.listCardHeader}>
+                          <PlayerAvatar name={item.player.full_name} photoUrl={item.player.photo_url} />
+                          <View style={styles.flex}>
+                            <Text style={styles.panelTitle}>{item.player.full_name}</Text>
+                            <Text style={styles.panelText}>
+                              {item.priorityGroup
+                                ? `${item.priorityGroup.priority_rank}. ${item.priorityGroup.name}`
+                                : "Sem prioridade definida"}
+                            </Text>
+                            <Text style={styles.panelText}>
+                              Posicoes:{" "}
+                              {item.preferredPositions.length > 0
+                                ? item.preferredPositions.map((position) => position.name).join(", ")
+                                : "Nao informadas"}
+                            </Text>
+                          </View>
+                          {canManageWeeklyList ? (
+                            <View style={styles.listActions}>
+                              <Pressable
+                                onPress={() => void handleRemovePlayerFromWeeklyList(item)}
+                                disabled={weeklyActionId === item.participant.id}
+                                style={[
+                                  styles.inlineDangerButton,
+                                  weeklyActionId === item.participant.id && styles.buttonDisabled,
+                                ]}>
+                                <Text style={styles.inlineDangerText}>
+                                  {weeklyActionId === item.participant.id ? "Retirando..." : "Retirar"}
+                                </Text>
+                              </Pressable>
+                            </View>
+                          ) : null}
+                        </View>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.panelText}>Nenhum jogador entrou na lista ainda.</Text>
+                  )}
+                </View>
+
+                <View style={styles.weeklyColumn}>
+                  <Text style={styles.workspaceTitle}>Fora da lista</Text>
+                  <Text style={styles.panelText}>
+                    Jogadores elegiveis que ainda nao entraram nesta chamada.
+                  </Text>
+
+                  <View style={styles.chips}>
+                    <Pressable
+                      onPress={() => setWeeklyPriorityFilter("all")}
+                      style={[styles.chip, weeklyPriorityFilter === "all" && styles.chipSelected]}>
+                      <Text style={[styles.chipText, weeklyPriorityFilter === "all" && styles.chipTextSelected]}>
+                        Todos
+                      </Text>
+                    </Pressable>
+                    {(overview?.priorityGroups ?? []).map((group) => (
+                      <Pressable
+                        key={group.id}
+                        onPress={() => setWeeklyPriorityFilter(group.id)}
+                        style={[styles.chip, weeklyPriorityFilter === group.id && styles.chipSelected]}>
+                        <Text
+                          style={[
+                            styles.chipText,
+                            weeklyPriorityFilter === group.id && styles.chipTextSelected,
+                          ]}>
+                          {group.priority_rank}. {group.name}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  {availableWeeklyPlayers.length > 0 ? (
+                    availableWeeklyPlayers.map((item) => (
+                      <View key={item.player.id} style={styles.listCard}>
+                        <View style={styles.listCardHeader}>
+                          <PlayerAvatar name={item.player.full_name} photoUrl={item.player.photo_url} />
+                          <View style={styles.flex}>
+                            <Text style={styles.panelTitle}>{item.player.full_name}</Text>
+                            <Text style={styles.panelText}>
+                              {item.priorityGroup
+                                ? `${item.priorityGroup.priority_rank}. ${item.priorityGroup.name}`
+                                : "Sem prioridade definida"}
+                            </Text>
+                            <Text style={styles.panelText}>
+                              Posicoes:{" "}
+                              {item.preferredPositions.length > 0
+                                ? item.preferredPositions.map((position) => position.name).join(", ")
+                                : "Nao informadas"}
+                            </Text>
+                          </View>
+                          {canManageWeeklyList ? (
+                            <View style={styles.listActions}>
+                              <Pressable
+                                onPress={() => void handleAddPlayerToWeeklyList(item)}
+                                disabled={weeklyActionId === item.player.id}
+                                style={[
+                                  styles.inlineActionButton,
+                                  weeklyActionId === item.player.id && styles.buttonDisabled,
+                                ]}>
+                                <Text style={styles.inlineActionText}>
+                                  {weeklyActionId === item.player.id ? "Entrando..." : "Incluir"}
+                                </Text>
+                              </Pressable>
+                            </View>
+                          ) : null}
+                        </View>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.panelText}>
+                      {accountPlayers.length === 0
+                        ? "Primeiro cadastre os jogadores da conta."
+                        : "Nenhum jogador fora da lista para esse filtro."}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            ) : (
+              <View style={styles.weeklyColumn}>
+                <Text style={styles.workspaceTitle}>
+                  {weeklyEvent.status === "draft"
+                    ? "Lista atual do evento"
+                    : weeklyEvent.status === "completed"
+                      ? "Lista final do evento"
+                      : "Lista fechada"}
+                </Text>
+                <Text style={styles.panelText}>
+                  {weeklyEvent.status === "draft"
+                    ? "Essa visao mostra quem ja entrou na chamada atual."
+                    : "Depois do fechamento, o BoraJogar mostra apenas a lista definitiva que entrou no evento."}
+                </Text>
+
+                {activeWeeklyParticipants.length > 0 ? (
+                  activeWeeklyParticipants.map((item) => (
+                    <View key={item.participant.id} style={styles.listCard}>
+                      <View style={styles.listCardHeader}>
+                        <PlayerAvatar name={item.player.full_name} photoUrl={item.player.photo_url} />
+                        <View style={styles.flex}>
+                          <Text style={styles.panelTitle}>{item.player.full_name}</Text>
+                          <Text style={styles.panelText}>
+                            {item.priorityGroup
+                              ? `${item.priorityGroup.priority_rank}. ${item.priorityGroup.name}`
+                              : "Sem prioridade definida"}
+                          </Text>
+                          <Text style={styles.panelText}>
+                            Posicoes:{" "}
+                            {item.preferredPositions.length > 0
+                              ? item.preferredPositions.map((position) => position.name).join(", ")
+                              : "Nao informadas"}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.panelText}>Nenhum jogador foi mantido na lista final.</Text>
+                )}
+              </View>
+            )}
+
+            {renderWeeklyPollResults()}
+          </>
+        )}
+      </>
+    );
+  }
+
   function renderAccountWorkspace() {
-    if (!selectedAccess || !overview || !canManageAccount) {
+    if (!selectedAccess || !overview) {
       return null;
     }
 
@@ -3203,45 +3710,55 @@ export default function HomeScreen() {
       <View style={styles.panel}>
         <View style={styles.inlineHeader}>
           <View style={styles.inlineHeaderContent}>
-            <Text style={styles.panelTitle}>Gestao da conta esportiva</Text>
+            <Text style={styles.panelTitle}>
+              {isSuperAdmin ? "Gestao da conta esportiva" : "Operacao principal da conta"}
+            </Text>
             <Text style={styles.panelText}>
-              Edicao da conta fica separada. Aqui voce administra jogadores, enquetes recorrentes e a chamada semanal do jogo.
+              {isSuperAdmin
+                ? "Edicao da conta fica separada. Aqui voce administra jogadores, enquetes recorrentes e a chamada semanal do jogo."
+                : "A chamada semanal fica em destaque. As demais configuracoes do grupo aparecem separadas abaixo."}
             </Text>
           </View>
-          <Pressable onPress={() => void openEditAccountModal(selectedAccess.account.id)} style={styles.secondaryButton}>
-            <Text style={styles.secondaryButtonText}>Editar conta</Text>
-          </Pressable>
+          {canManageAccount ? (
+            <Pressable onPress={() => void openEditAccountModal(selectedAccess.account.id)} style={styles.secondaryButton}>
+              <Text style={styles.secondaryButtonText}>Editar conta</Text>
+            </Pressable>
+          ) : null}
         </View>
 
-        <View style={styles.tabRow}>
-          <Pressable
-            onPress={() => setWorkspaceTab("players")}
-            style={[styles.tabButton, workspaceTab === "players" && styles.tabButtonActive]}>
-            <Text style={[styles.tabText, workspaceTab === "players" && styles.tabTextActive]}>
-              Jogadores
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setWorkspaceTab("polls")}
-            style={[styles.tabButton, workspaceTab === "polls" && styles.tabButtonActive]}>
-            <Text style={[styles.tabText, workspaceTab === "polls" && styles.tabTextActive]}>
-              Enquetes
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setWorkspaceTab("weekly")}
-            style={[styles.tabButton, workspaceTab === "weekly" && styles.tabButtonActive]}>
-            <Text style={[styles.tabText, workspaceTab === "weekly" && styles.tabTextActive]}>
-              Lista semanal
-            </Text>
-          </Pressable>
-        </View>
+        {canManageAccount ? (
+          <View style={styles.tabRow}>
+            <Pressable
+              onPress={() => setWorkspaceTab("weekly")}
+              style={[styles.tabButton, workspaceTab === "weekly" && styles.tabButtonActive]}>
+              <Text style={[styles.tabText, workspaceTab === "weekly" && styles.tabTextActive]}>
+                Lista semanal
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setWorkspaceTab("players")}
+              style={[styles.tabButton, workspaceTab === "players" && styles.tabButtonActive]}>
+              <Text style={[styles.tabText, workspaceTab === "players" && styles.tabTextActive]}>
+                Jogadores
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setWorkspaceTab("polls")}
+              style={[styles.tabButton, workspaceTab === "polls" && styles.tabButtonActive]}>
+              <Text style={[styles.tabText, workspaceTab === "polls" && styles.tabTextActive]}>
+                Enquetes
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         {isWorkspaceLoading ? (
           <View style={styles.workspaceLoading}>
             <ActivityIndicator color={Colors.tint} />
             <Text style={styles.panelText}>Carregando gestao da conta...</Text>
           </View>
+        ) : !canManageAccount ? (
+          renderWeeklyWorkspace()
         ) : workspaceTab === "players" ? (
           <>
             <View style={styles.inlineHeader}>
@@ -3260,6 +3777,7 @@ export default function HomeScreen() {
               accountPlayers.map((item) => (
                 <View key={item.player.id} style={styles.listCard}>
                   <View style={styles.listCardHeader}>
+                    <PlayerAvatar name={item.player.full_name} photoUrl={item.player.photo_url} />
                     <View style={styles.flex}>
                       <Text style={styles.panelTitle}>{item.player.full_name}</Text>
                       <Text style={styles.panelText}>
@@ -3358,240 +3876,21 @@ export default function HomeScreen() {
             )}
           </>
         ) : (
-          <>
-            <View style={styles.inlineHeader}>
-              <View style={styles.inlineHeaderContent}>
-                <Text style={styles.workspaceTitle}>Chamada da semana</Text>
-                <Text style={styles.panelText}>
-                  Abra a chamada do proximo jogo, monte a lista, feche quando terminar e depois gere as enquetes do evento.
-                </Text>
-              </View>
-              {!weeklyEvent ? (
-                <Pressable
-                  onPress={() => void handleCreateWeeklyCall()}
-                  disabled={weeklyActionId === "create"}
-                  style={[styles.secondaryButton, weeklyActionId === "create" && styles.buttonDisabled]}>
-                  <Text style={styles.secondaryButtonText}>
-                    {weeklyActionId === "create" ? "Criando..." : "Criar chamada para jogo"}
-                  </Text>
-                </Pressable>
-              ) : null}
-            </View>
-
-            {!weeklyEvent ? (
-              <Text style={styles.panelText}>
-                Nenhuma chamada semanal aberta. Ao criar, o BoraJogar usa o proximo horario do grupo e ja inclui quem esta marcado para entrar sempre.
-              </Text>
-            ) : (
-              <>
-                <View style={styles.listCard}>
-                  <Text style={styles.panelTitle}>{weeklyEvent.title}</Text>
-                  <Text style={styles.panelText}>
-                    Jogo:{" "}
-                    {new Date(weeklyEvent.starts_at).toLocaleString("pt-BR", {
-                      dateStyle: "short",
-                      timeStyle: "short",
-                    })}{" "}
-                    ate{" "}
-                    {new Date(weeklyEvent.ends_at).toLocaleTimeString("pt-BR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </Text>
-                  <Text style={styles.panelText}>
-                    Status: {weeklyEvent.status === "draft" ? "Lista aberta" : "Lista fechada"}
-                  </Text>
-                  <Text style={styles.panelText}>
-                    Na lista: {activeWeeklyParticipants.length} / {overview.account.max_players_per_event}
-                  </Text>
-                  <Text style={styles.panelText}>
-                    Enquetes do evento: {weeklyEventPolls.length}
-                  </Text>
-                </View>
-
-                {weeklyEvent.status === "draft" ? (
-                  <View style={styles.inlineHeader}>
-                    <View style={styles.inlineHeaderContent}>
-                      <Text style={styles.workspaceTitle}>Lista em montagem</Text>
-                      <Text style={styles.panelText}>
-                        Enquanto a lista estiver aberta, voce pode incluir ou retirar jogadores mantendo a ordem de prioridade.
-                      </Text>
-                    </View>
-                    <Pressable
-                      onPress={confirmCloseWeeklyList}
-                      disabled={weeklyActionId === "close"}
-                      style={[styles.secondaryButton, weeklyActionId === "close" && styles.buttonDisabled]}>
-                      <Text style={styles.secondaryButtonText}>
-                        {weeklyActionId === "close" ? "Fechando..." : "Fechar lista"}
-                      </Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <View style={styles.inlineHeader}>
-                    <View style={styles.inlineHeaderContent}>
-                      <Text style={styles.workspaceTitle}>Lista fechada</Text>
-                      <Text style={styles.panelText}>
-                        Com a lista fechada, voce pode criar as enquetes do evento e encerrar o jogo quando terminar.
-                      </Text>
-                    </View>
-                    <View style={styles.listActions}>
-                      <Pressable
-                        onPress={() => void handleCreateEventPolls()}
-                        disabled={weeklyActionId === "polls" || weeklyEventPolls.length > 0}
-                        style={[
-                          styles.inlineActionButton,
-                          (weeklyActionId === "polls" || weeklyEventPolls.length > 0) && styles.buttonDisabled,
-                        ]}>
-                        <Text style={styles.inlineActionText}>
-                          {weeklyEventPolls.length > 0
-                            ? "Enquetes criadas"
-                            : weeklyActionId === "polls"
-                              ? "Criando..."
-                              : "Criar enquetes"}
-                        </Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={confirmCompleteWeeklyEvent}
-                        disabled={weeklyActionId === "complete"}
-                        style={[styles.inlineDangerButton, weeklyActionId === "complete" && styles.buttonDisabled]}>
-                        <Text style={styles.inlineDangerText}>
-                          {weeklyActionId === "complete" ? "Encerrando..." : "Encerrar evento"}
-                        </Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                )}
-
-                <View style={styles.weeklyBoard}>
-                  <View style={styles.weeklyColumn}>
-                    <Text style={styles.workspaceTitle}>Na lista</Text>
-                    <Text style={styles.panelText}>
-                      Jogadores confirmados na chamada atual, sempre ordenados pela prioridade da conta.
-                    </Text>
-
-                    {activeWeeklyParticipants.length > 0 ? (
-                      activeWeeklyParticipants.map((item) => (
-                        <View key={item.participant.id} style={styles.listCard}>
-                          <View style={styles.listCardHeader}>
-                            <View style={styles.flex}>
-                              <Text style={styles.panelTitle}>{item.player.full_name}</Text>
-                              <Text style={styles.panelText}>
-                                {item.priorityGroup
-                                  ? `${item.priorityGroup.priority_rank}. ${item.priorityGroup.name}`
-                                  : "Sem prioridade definida"}
-                              </Text>
-                              <Text style={styles.panelText}>
-                                Posicoes:{" "}
-                                {item.preferredPositions.length > 0
-                                  ? item.preferredPositions.map((position) => position.name).join(", ")
-                                  : "Nao informadas"}
-                              </Text>
-                            </View>
-                            {weeklyEvent.status === "draft" ? (
-                              <View style={styles.listActions}>
-                                <Pressable
-                                  onPress={() => void handleRemovePlayerFromWeeklyList(item)}
-                                  disabled={weeklyActionId === item.participant.id}
-                                  style={[
-                                    styles.inlineDangerButton,
-                                    weeklyActionId === item.participant.id && styles.buttonDisabled,
-                                  ]}>
-                                  <Text style={styles.inlineDangerText}>
-                                    {weeklyActionId === item.participant.id ? "Retirando..." : "Retirar"}
-                                  </Text>
-                                </Pressable>
-                              </View>
-                            ) : null}
-                          </View>
-                        </View>
-                      ))
-                    ) : (
-                      <Text style={styles.panelText}>
-                        Nenhum jogador entrou na lista ainda.
-                      </Text>
-                    )}
-                  </View>
-
-                  <View style={styles.weeklyColumn}>
-                    <Text style={styles.workspaceTitle}>Fora da lista</Text>
-                    <Text style={styles.panelText}>
-                      Jogadores elegiveis que ainda nao entraram nesta chamada.
-                    </Text>
-
-                    <View style={styles.chips}>
-                      <Pressable
-                        onPress={() => setWeeklyPriorityFilter("all")}
-                        style={[styles.chip, weeklyPriorityFilter === "all" && styles.chipSelected]}>
-                        <Text style={[styles.chipText, weeklyPriorityFilter === "all" && styles.chipTextSelected]}>
-                          Todos
-                        </Text>
-                      </Pressable>
-                      {overview.priorityGroups.map((group) => (
-                        <Pressable
-                          key={group.id}
-                          onPress={() => setWeeklyPriorityFilter(group.id)}
-                          style={[styles.chip, weeklyPriorityFilter === group.id && styles.chipSelected]}>
-                          <Text
-                            style={[
-                              styles.chipText,
-                              weeklyPriorityFilter === group.id && styles.chipTextSelected,
-                            ]}>
-                            {group.priority_rank}. {group.name}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-
-                    {availableWeeklyPlayers.length > 0 ? (
-                      availableWeeklyPlayers.map((item) => (
-                        <View key={item.player.id} style={styles.listCard}>
-                          <View style={styles.listCardHeader}>
-                            <View style={styles.flex}>
-                              <Text style={styles.panelTitle}>{item.player.full_name}</Text>
-                              <Text style={styles.panelText}>
-                                {item.priorityGroup
-                                  ? `${item.priorityGroup.priority_rank}. ${item.priorityGroup.name}`
-                                  : "Sem prioridade definida"}
-                              </Text>
-                            </View>
-                            {weeklyEvent.status === "draft" ? (
-                              <View style={styles.listActions}>
-                                <Pressable
-                                  onPress={() => void handleAddPlayerToWeeklyList(item)}
-                                  disabled={weeklyActionId === item.player.id}
-                                  style={[
-                                    styles.inlineActionButton,
-                                    weeklyActionId === item.player.id && styles.buttonDisabled,
-                                  ]}>
-                                  <Text style={styles.inlineActionText}>
-                                    {weeklyActionId === item.player.id ? "Entrando..." : "Incluir"}
-                                  </Text>
-                                </Pressable>
-                              </View>
-                            ) : null}
-                          </View>
-                        </View>
-                      ))
-                    ) : (
-                      <Text style={styles.panelText}>
-                        {accountPlayers.length === 0
-                          ? "Primeiro cadastre os jogadores da conta."
-                          : "Nenhum jogador fora da lista para esse filtro."}
-                      </Text>
-                    )}
-                  </View>
-                </View>
-              </>
-            )}
-          </>
+          renderWeeklyWorkspace()
         )}
       </View>
     );
   }
 
-  const canManageAccount = Boolean(
+  const canManageWeeklyList = Boolean(
     profile?.is_super_admin || selectedMembership?.membership.role === "group_admin",
   );
+  const canManageWeeklyPolls = Boolean(
+    profile?.is_super_admin ||
+      selectedMembership?.membership.role === "group_admin" ||
+      selectedMembership?.membership.role === "group_moderator",
+  );
+  const canManageAccount = canManageWeeklyList;
 
   const activeWeeklyParticipants = weeklyParticipants
     .filter((item) => item.participant.selection_status === "active")
@@ -3702,7 +4001,21 @@ export default function HomeScreen() {
 
           {overview ? (
             <>
+              {!isSuperAdmin ? renderAccountWorkspace() : null}
+
+              <View style={styles.panel}>
+                <Text style={styles.panelTitle}>{selectedAccess.account.name}</Text>
+                <Text style={styles.panelText}>
+                  {isSuperAdmin ? "Conta esportiva selecionada para gestao." : `Seu papel nesta conta: ${selectedAccess.roleLabel}.`}
+                </Text>
+                <Text style={styles.panelText}>Modalidade principal: {overview.modality.name}</Text>
+              </View>
+
               <View style={styles.summaryRow}>
+                <View style={styles.summaryCard}>
+                  <Text style={styles.summaryValue}>{selectedAccess.account.name}</Text>
+                  <Text style={styles.summaryLabel}>Grupo esportivo</Text>
+                </View>
                 <View style={styles.summaryCard}>
                   <Text style={styles.summaryValue}>{overview.modality.name}</Text>
                   <Text style={styles.summaryLabel}>Modalidade</Text>
@@ -3746,7 +4059,7 @@ export default function HomeScreen() {
                 </View>
               </View>
 
-              {renderAccountWorkspace()}
+              {isSuperAdmin ? renderAccountWorkspace() : null}
             </>
           ) : null}
         </View>
@@ -3877,6 +4190,16 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     gap: 8,
   },
+  avatarFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.tint,
+  },
+  avatarFallbackText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "900",
+  },
   weeklyBoard: {
     gap: 12,
   },
@@ -3887,6 +4210,65 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     padding: 14,
     gap: 10,
+  },
+  stateRail: {
+    gap: 8,
+  },
+  stateStep: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  stateStepCompleted: {
+    borderColor: Colors.tint,
+    backgroundColor: "#eef7ee",
+  },
+  stateStepActive: {
+    borderColor: Colors.accent,
+    backgroundColor: "#f7f9d8",
+  },
+  stateStepLabel: {
+    color: Colors.textMuted,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  stateStepLabelActive: {
+    color: Colors.text,
+  },
+  pollResultCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+    padding: 14,
+    gap: 10,
+  },
+  pollResultEntry: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  pollResultLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  pollResultRank: {
+    width: 18,
+    color: Colors.textMuted,
+    fontSize: 12,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  pollResultVotes: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "900",
   },
   inlineActionButton: {
     borderRadius: 999,

@@ -9,6 +9,8 @@ import type {
   Event,
   EventParticipant,
   EventPoll,
+  EventPollOption,
+  EventPollVote,
   ModalityPosition,
   PollTemplate,
   Profile,
@@ -64,6 +66,20 @@ export type WeeklyEventParticipantItem = {
   linkedProfile: Profile | null;
   priorityGroup: AccountPriorityGroup | null;
   preferredPositions: ModalityPosition[];
+};
+
+export type EventPollResultEntry = {
+  id: string;
+  label: string;
+  description: string | null;
+  votes: number;
+  photoUrl: string | null;
+};
+
+export type EventPollResultSummary = {
+  poll: EventPoll;
+  totalVotes: number;
+  entries: EventPollResultEntry[];
 };
 
 export type CreateAccountPlayerInput = {
@@ -1209,6 +1225,20 @@ export async function getCurrentWeeklyEvent(accountId: string): Promise<Event | 
   return (data as Event | null) ?? null;
 }
 
+export async function getLatestWeeklyEvent(accountId: string): Promise<Event | null> {
+  const { data, error } = await supabase
+    .from("events")
+    .select(eventSelectFields)
+    .eq("account_id", accountId)
+    .in("status", ["draft", "published", "completed"])
+    .order("starts_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  throwIfError(error);
+  return (data as Event | null) ?? null;
+}
+
 export async function listWeeklyEventParticipants(
   eventId: string,
   modalityId: string,
@@ -1400,6 +1430,167 @@ export async function listEventPolls(eventId: string): Promise<EventPoll[]> {
 
   throwIfError(error);
   return (data ?? []) as EventPoll[];
+}
+
+export async function listEventPollResults(eventId: string): Promise<EventPollResultSummary[]> {
+  const polls = await listEventPolls(eventId);
+
+  if (polls.length === 0) {
+    return [];
+  }
+
+  const pollIds = polls.map((poll) => poll.id);
+  const [
+    { data: optionData, error: optionError },
+    { data: voteData, error: voteError },
+  ] = await Promise.all([
+    supabase
+      .from("event_poll_options")
+      .select("id, poll_id, target_participant_id, label, description, sort_order, created_by, created_at, updated_at")
+      .in("poll_id", pollIds)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("event_poll_votes")
+      .select("id, poll_id, voter_participant_id, option_id, target_participant_id, created_at")
+      .in("poll_id", pollIds),
+  ]);
+
+  throwIfError(optionError);
+  throwIfError(voteError);
+
+  const options = (optionData ?? []) as EventPollOption[];
+  const votes = (voteData ?? []) as EventPollVote[];
+  const participantIds = [
+    ...new Set(
+      options
+        .map((option) => option.target_participant_id)
+        .concat(votes.map((vote) => vote.target_participant_id))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+
+  let participantMap = new Map<string, EventParticipant>();
+  let playerMap = new Map<string, AccountPlayer>();
+
+  if (participantIds.length > 0) {
+    const { data: participantData, error: participantError } = await supabase
+      .from("event_participants")
+      .select(eventParticipantSelectFields)
+      .in("id", participantIds);
+
+    throwIfError(participantError);
+
+    const participants = (participantData ?? []) as EventParticipant[];
+    participantMap = new Map(participants.map((participant) => [participant.id, participant]));
+
+    const playerIds = [
+      ...new Set(
+        participants
+          .map((participant) => participant.account_player_id)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ];
+
+    if (playerIds.length > 0) {
+      const { data: playerData, error: playerError } = await supabase
+        .from("account_players")
+        .select(
+          "id, account_id, linked_profile_id, full_name, email, photo_url, priority_group_id, is_default_for_weekly_list, is_active, created_by, created_at, updated_at",
+        )
+        .in("id", playerIds);
+
+      throwIfError(playerError);
+      playerMap = new Map(((playerData ?? []) as AccountPlayer[]).map((player) => [player.id, player]));
+    }
+  }
+
+  return polls.map((poll) => {
+    const pollVotes = votes.filter((vote) => vote.poll_id === poll.id);
+    const totalVotes = pollVotes.length;
+
+    if (poll.selection_mode === "predefined_options") {
+      const entries: EventPollResultEntry[] = options
+        .filter((option) => option.poll_id === poll.id)
+        .map((option) => {
+          const targetParticipant = option.target_participant_id
+            ? participantMap.get(option.target_participant_id) ?? null
+            : null;
+          const targetPlayer = targetParticipant?.account_player_id
+            ? playerMap.get(targetParticipant.account_player_id) ?? null
+            : null;
+
+          return {
+            id: option.id,
+            label: option.label,
+            description: option.description ?? null,
+            votes: pollVotes.filter((vote) => vote.option_id === option.id).length,
+            photoUrl: targetPlayer?.photo_url ?? null,
+          };
+        })
+        .sort((first, second) => {
+          if (first.votes !== second.votes) {
+            return second.votes - first.votes;
+          }
+
+          return first.label.localeCompare(second.label);
+        });
+
+      return {
+        poll,
+        totalVotes,
+        entries,
+      } satisfies EventPollResultSummary;
+    }
+
+    const voteCountByParticipant = new Map<string, number>();
+
+    for (const vote of pollVotes) {
+      if (!vote.target_participant_id) {
+        continue;
+      }
+
+      voteCountByParticipant.set(
+        vote.target_participant_id,
+        (voteCountByParticipant.get(vote.target_participant_id) ?? 0) + 1,
+      );
+    }
+
+    const entries: EventPollResultEntry[] = [...voteCountByParticipant.entries()].reduce<
+      EventPollResultEntry[]
+    >((current, [participantId, count]) => {
+        const participant = participantMap.get(participantId) ?? null;
+        const player = participant?.account_player_id
+          ? playerMap.get(participant.account_player_id) ?? null
+          : null;
+
+        if (!player) {
+          return current;
+        }
+
+        current.push({
+          id: participantId,
+          label: player.full_name,
+          description: null,
+          votes: count,
+          photoUrl: player.photo_url ?? null,
+        });
+
+        return current;
+      }, []).sort((first, second) => {
+        if (first.votes !== second.votes) {
+          return second.votes - first.votes;
+        }
+
+        return first.label.localeCompare(second.label);
+      });
+
+    return {
+      poll,
+      totalVotes,
+      entries,
+    } satisfies EventPollResultSummary;
+  });
 }
 
 export async function createWeeklyEventCall(input: {
