@@ -23,10 +23,14 @@
                 <p style="margin:0 0 24px;font-size:16px;line-height:24px;color:#355341;">
                   Toque no botao abaixo para abrir o app e cadastrar uma nova senha.
                 </p>
-                <p style="margin:0 0 24px;">
-                  <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#1d7f46;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:14px;font-size:15px;font-weight:700;">
+                <p style="margin:0 0 12px;">
+                  <a href="borajogar://reset-password?token_hash={{ .TokenHash }}&type=recovery" style="display:inline-block;background:#1d7f46;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:14px;font-size:15px;font-weight:700;">
                     Redefinir senha
                   </a>
+                </p>
+                <p style="margin:0 0 24px;font-size:13px;line-height:21px;color:#6b7d71;">
+                  Se o seu app de email bloquear a abertura direta, use este link alternativo:
+                  <a href="{{ .ConfirmationURL }}" style="color:#1d7f46;">abrir redefinicao no navegador</a>.
                 </p>
                 <p style="margin:0;font-size:13px;line-height:21px;color:#6b7d71;">
                   Se voce nao pediu essa alteracao, ignore este email. Sua senha atual continuara valendo.
