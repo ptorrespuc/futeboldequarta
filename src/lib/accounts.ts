@@ -37,6 +37,14 @@ export type AccountMembershipAdminItem = {
   priorityGroup: AccountPriorityGroup | null;
 };
 
+export type ProvisionedAuthProfile = {
+  profileId: string;
+  email: string;
+  fullName: string;
+  invited: boolean;
+  alreadyExisted: boolean;
+};
+
 export type AccountPlayerAdminItem = {
   player: AccountPlayer;
   linkedProfile: Profile | null;
@@ -203,6 +211,42 @@ export async function findProfileByEmail(email: string): Promise<Profile | null>
 
   throwIfError(error);
   return (data as Profile | null) ?? null;
+}
+
+export async function ensurePlayerLoginAccess(input: {
+  accountId: string;
+  email: string;
+  fullName: string;
+}): Promise<ProvisionedAuthProfile> {
+  const { data, error } = await supabase.functions.invoke("provision-player-access", {
+    body: {
+      accountId: input.accountId,
+      email: input.email.trim().toLowerCase(),
+      fullName: input.fullName.trim(),
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const response = data as Partial<ProvisionedAuthProfile> & { error?: string };
+
+  if (response.error) {
+    throw new Error(response.error);
+  }
+
+  if (!response.profileId || !response.email || !response.fullName) {
+    throw new Error("Nao foi possivel provisionar o login do jogador.");
+  }
+
+  return {
+    profileId: response.profileId,
+    email: response.email,
+    fullName: response.fullName,
+    invited: Boolean(response.invited),
+    alreadyExisted: Boolean(response.alreadyExisted),
+  };
 }
 
 export async function listAllAccountMemberships(): Promise<AccountMembershipAdminItem[]> {

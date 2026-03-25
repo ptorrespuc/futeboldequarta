@@ -25,6 +25,7 @@ import {
   createPollTemplate,
   deleteSportModality,
   deleteSportsAccount,
+  ensurePlayerLoginAccess,
   findProfileByEmail,
   listAllAccountMemberships,
   listAccountPlayers,
@@ -1366,29 +1367,35 @@ export default function HomeScreen() {
       let accountPlayerId: string | null = null;
       let profileLabel = membershipEmailDraft.trim().toLowerCase();
       const normalizedEmail = membershipEmailDraft.trim().toLowerCase();
+      let invitedAccess = false;
 
       if (!normalizedEmail || !normalizedEmail.includes("@")) {
         setMessage({ tone: "error", text: "Informe um email valido para o vinculo." });
         return;
       }
 
-      const linkedProfile = await findProfileByEmail(normalizedEmail);
+      let linkedProfile = await findProfileByEmail(normalizedEmail);
 
       if (!linkedProfile) {
-        setMessage({
-          tone: "error",
-          text: "Esse email ainda nao tem login no BoraJogar. Cadastre o jogador na aba Jogadores ou peca para ele criar a conta primeiro.",
+        const provisionedAccess = await ensurePlayerLoginAccess({
+          accountId: membershipAccountIdDraft,
+          email: normalizedEmail,
+          fullName: membershipNameDraft.trim(),
         });
-        return;
-      }
 
-      profileId = linkedProfile.id;
-      profileLabel = linkedProfile.full_name || linkedProfile.email;
+        invitedAccess = provisionedAccess.invited;
+        profileId = provisionedAccess.profileId;
+        profileLabel = provisionedAccess.fullName || provisionedAccess.email;
+        linkedProfile = await findProfileByEmail(normalizedEmail);
+      } else {
+        profileId = linkedProfile.id;
+        profileLabel = linkedProfile.full_name || linkedProfile.email;
+      }
 
       if (membershipActsAsPlayerDraft && profileId && profile?.id) {
         const desiredPhotoUrl = membershipPhotoTouched
           ? membershipPhotoUrlDraft.trim() || null
-          : membershipPhotoUrlDraft.trim() || linkedProfile.photo_url || null;
+          : membershipPhotoUrlDraft.trim() || linkedProfile?.photo_url || null;
         const linkedPlayer = await upsertAccountPlayerFromAccess({
           accountId: membershipAccountIdDraft,
           fullName: membershipNameDraft.trim(),
@@ -1459,7 +1466,13 @@ export default function HomeScreen() {
       setAdminTab("memberships");
       setMessage({
         tone: "success",
-        text: isEditing ? "Vinculo atualizado." : `${profileLabel} vinculado com sucesso.`,
+        text: isEditing
+          ? invitedAccess
+            ? "Vinculo atualizado e convite de acesso enviado."
+            : "Vinculo atualizado."
+          : invitedAccess
+            ? `${profileLabel} vinculado com sucesso. O convite para definir a senha foi enviado por email.`
+            : `${profileLabel} vinculado com sucesso.`,
       });
     } catch (saveError) {
       setMessage({ tone: "error", text: getReadableError(saveError) });
@@ -1556,11 +1569,23 @@ export default function HomeScreen() {
     setMessage(null);
 
     try {
-      const linkedProfileId = await resolveLinkedProfileId(playerEmailDraft);
+      const normalizedPlayerEmail = playerEmailDraft.trim().toLowerCase();
+      let linkedProfileId = await resolveLinkedProfileId(normalizedPlayerEmail);
+      let invitedAccess = false;
       const isEditing = adminModal?.type === "player" && adminModal.mode === "edit" && adminModal.targetId;
-      const normalizedPlayerEmail = playerEmailDraft.trim().toLowerCase() || null;
       const desiredPhotoUrl = playerPhotoTouched ? playerPhotoUrlDraft.trim() || null : playerPhotoUrlDraft.trim() || null;
       let savedPlayerId: string | null = null;
+
+      if (!linkedProfileId && normalizedPlayerEmail) {
+        const provisionedAccess = await ensurePlayerLoginAccess({
+          accountId: selectedAccess.account.id,
+          email: normalizedPlayerEmail,
+          fullName: playerNameDraft.trim(),
+        });
+
+        linkedProfileId = provisionedAccess.profileId;
+        invitedAccess = provisionedAccess.invited;
+      }
 
       if (isEditing && adminModal.targetId) {
         await updateAccountPlayer({
@@ -1618,10 +1643,11 @@ export default function HomeScreen() {
       setWorkspaceTab("players");
       setMessage({
         tone: "success",
-        text:
-          linkedProfileId && playerEmailDraft.trim()
-            ? "Jogador salvo e associado ao login existente."
-            : "Jogador salvo na conta esportiva.",
+        text: linkedProfileId && normalizedPlayerEmail
+          ? invitedAccess
+            ? "Jogador salvo e o convite para definir a senha foi enviado por email."
+            : "Jogador salvo e associado ao login existente."
+          : "Jogador salvo na conta esportiva.",
       });
     } catch (saveError) {
       setMessage({ tone: "error", text: getReadableError(saveError) });
@@ -2172,7 +2198,7 @@ export default function HomeScreen() {
                     <View style={styles.formSection}>
                       <Text style={styles.formSectionTitle}>Acesso do usuario</Text>
                       <Text style={styles.fieldHint}>
-                        O email precisa existir como login no BoraJogar. Esse fluxo tambem atualiza o cadastro do jogador da conta.
+                        Se o email ainda nao tiver login no BoraJogar, o app cria o acesso e envia um email para a pessoa definir a senha.
                       </Text>
 
                       <View style={styles.fieldBlock}>
@@ -2412,7 +2438,7 @@ export default function HomeScreen() {
                     <View style={styles.formSection}>
                       <Text style={styles.formSectionTitle}>Cadastro do jogador</Text>
                       <Text style={styles.fieldHint}>
-                        O jogador pode existir sem login. Se o email informado ja tiver perfil no BoraJogar, o app associa o login automaticamente.
+                        O jogador pode existir sem login. Se voce informar um email, o BoraJogar associa o login existente ou cria um novo acesso e envia o email para definir a senha.
                       </Text>
 
                       <View style={styles.fieldBlock}>

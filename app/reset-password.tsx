@@ -66,7 +66,7 @@ export default function ResetPasswordScreen() {
           <View style={styles.card}>
             <Text style={styles.title}>Redefinir senha</Text>
             <Text style={styles.subtitle}>
-              Abra novamente o link enviado por email neste aparelho para autorizar a troca da senha.
+              Abra novamente o link enviado por email neste aparelho para autorizar a definicao da senha.
             </Text>
             <Pressable onPress={() => router.replace("/login")} style={styles.secondaryButton}>
               <Text style={styles.secondaryButtonText}>Voltar para login</Text>
@@ -83,7 +83,7 @@ export default function ResetPasswordScreen() {
         <View style={styles.card}>
           <Text style={styles.title}>Nova senha</Text>
           <Text style={styles.subtitle}>
-            Defina a nova senha da sua conta para concluir a recuperacao.
+            Defina a senha da sua conta para concluir o acesso ao BoraJogar.
           </Text>
 
           <TextInput
