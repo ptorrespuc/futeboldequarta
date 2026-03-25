@@ -5,6 +5,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  Share,
   ScrollView,
   StyleSheet,
   Text,
@@ -1370,6 +1371,7 @@ export default function HomeScreen() {
       let profileLabel = membershipEmailDraft.trim().toLowerCase();
       const normalizedEmail = membershipEmailDraft.trim().toLowerCase();
       let invitedAccess = false;
+      let manualActionLink: string | null = null;
 
       if (!normalizedEmail || !normalizedEmail.includes("@")) {
         setMessage({ tone: "error", text: "Informe um email valido para o vinculo." });
@@ -1386,6 +1388,7 @@ export default function HomeScreen() {
         });
 
         invitedAccess = provisionedAccess.invited;
+        manualActionLink = provisionedAccess.manualActionLink;
         profileId = provisionedAccess.profileId;
         profileLabel = provisionedAccess.fullName || provisionedAccess.email;
         linkedProfile = await findProfileByEmail(normalizedEmail);
@@ -1466,14 +1469,28 @@ export default function HomeScreen() {
       closeAdminModal();
       resetMembershipForm();
       setAdminTab("memberships");
+
+      const sharedManualLink =
+        invitedAccess && manualActionLink
+          ? await shareManualAccessLink({
+              fullName: membershipNameDraft.trim(),
+              email: normalizedEmail,
+              actionLink: manualActionLink,
+            })
+          : false;
+
       setMessage({
         tone: "success",
         text: isEditing
           ? invitedAccess
-            ? "Vinculo atualizado e convite de acesso enviado."
+            ? sharedManualLink
+              ? "Vinculo atualizado. O limite de email do Supabase foi atingido e o link de primeiro acesso foi aberto para compartilhamento."
+              : "Vinculo atualizado e convite de acesso enviado."
             : "Vinculo atualizado."
           : invitedAccess
-            ? `${profileLabel} vinculado com sucesso. O convite para definir a senha foi enviado por email.`
+            ? sharedManualLink
+              ? `${profileLabel} vinculado com sucesso. O limite de email do Supabase foi atingido e o link de primeiro acesso foi aberto para compartilhamento.`
+              : `${profileLabel} vinculado com sucesso. O convite para definir a senha foi enviado por email.`
             : `${profileLabel} vinculado com sucesso.`,
       });
     } catch (saveError) {
@@ -1521,6 +1538,19 @@ export default function HomeScreen() {
       { text: "Galeria", onPress: onLibrary },
       { text: "Tirar foto", onPress: onCamera },
     ]);
+  }
+
+  async function shareManualAccessLink(input: { fullName: string; email: string; actionLink: string }) {
+    if (Platform.OS === "web") {
+      return false;
+    }
+
+    await Share.share({
+      title: "Primeiro acesso ao BoraJogar",
+      message: `Convite de acesso ao BoraJogar para ${input.fullName} (${input.email}).\n\nAbra este link para definir a senha:\n${input.actionLink}`,
+    });
+
+    return true;
   }
 
   async function handlePickMembershipPhotoFromLibrary() {
@@ -1617,6 +1647,7 @@ export default function HomeScreen() {
       const normalizedPlayerEmail = playerEmailDraft.trim().toLowerCase();
       let linkedProfileId = await resolveLinkedProfileId(normalizedPlayerEmail);
       let invitedAccess = false;
+      let manualActionLink: string | null = null;
       const isEditing = adminModal?.type === "player" && adminModal.mode === "edit" && adminModal.targetId;
       const desiredPhotoUrl = playerPhotoTouched ? playerPhotoUrlDraft.trim() || null : playerPhotoUrlDraft.trim() || null;
       let savedPlayerId: string | null = null;
@@ -1630,6 +1661,7 @@ export default function HomeScreen() {
 
         linkedProfileId = provisionedAccess.profileId;
         invitedAccess = provisionedAccess.invited;
+        manualActionLink = provisionedAccess.manualActionLink;
       }
 
       if (isEditing && adminModal.targetId) {
@@ -1686,11 +1718,23 @@ export default function HomeScreen() {
       closeAdminModal();
       resetPlayerForm();
       setWorkspaceTab("players");
+
+      const sharedManualLink =
+        invitedAccess && manualActionLink
+          ? await shareManualAccessLink({
+              fullName: playerNameDraft.trim(),
+              email: normalizedPlayerEmail,
+              actionLink: manualActionLink,
+            })
+          : false;
+
       setMessage({
         tone: "success",
         text: linkedProfileId && normalizedPlayerEmail
           ? invitedAccess
-            ? "Jogador salvo e o convite para definir a senha foi enviado por email."
+            ? sharedManualLink
+              ? "Jogador salvo. O limite de email do Supabase foi atingido e o link de primeiro acesso foi aberto para compartilhamento."
+              : "Jogador salvo e o convite para definir a senha foi enviado por email."
             : "Jogador salvo e associado ao login existente."
           : "Jogador salvo na conta esportiva.",
       });

@@ -37,6 +37,14 @@ function getReadableError(error: unknown) {
   return "Nao foi possivel provisionar o acesso do jogador.";
 }
 
+function isEmailRateLimitError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message.toLowerCase().includes("email rate limit exceeded");
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -140,19 +148,49 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
-      data: {
-        full_name: fullName,
-        name: fullName,
+    let invitedUser = null;
+    let manualActionLink: string | null = null;
+    let inviteDelivery: "email" | "manual_link" = "email";
+
+    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
+      email,
+      {
+        data: {
+          full_name: fullName,
+          name: fullName,
+        },
+        redirectTo: "borajogar://reset-password",
       },
-      redirectTo: "borajogar://reset-password",
-    });
+    );
 
     if (inviteError) {
-      throw inviteError;
-    }
+      if (!isEmailRateLimitError(inviteError)) {
+        throw inviteError;
+      }
 
-    const invitedUser = inviteData.user;
+      const { data: generatedLinkData, error: generatedLinkError } =
+        await supabaseAdmin.auth.admin.generateLink({
+          type: "invite",
+          email,
+          options: {
+            data: {
+              full_name: fullName,
+              name: fullName,
+            },
+            redirectTo: "borajogar://reset-password",
+          },
+        });
+
+      if (generatedLinkError) {
+        throw generatedLinkError;
+      }
+
+      invitedUser = generatedLinkData.user;
+      manualActionLink = generatedLinkData.properties.action_link;
+      inviteDelivery = "manual_link";
+    } else {
+      invitedUser = inviteData.user;
+    }
 
     if (!invitedUser) {
       throw new Error("O Auth nao retornou o usuario convidado.");
@@ -179,6 +217,8 @@ Deno.serve(async (req) => {
       fullName,
       invited: true,
       alreadyExisted: false,
+      inviteDelivery,
+      manualActionLink,
     });
   } catch (error) {
     return jsonResponse(500, { error: getReadableError(error) });

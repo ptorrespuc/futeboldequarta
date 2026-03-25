@@ -43,6 +43,8 @@ export type ProvisionedAuthProfile = {
   fullName: string;
   invited: boolean;
   alreadyExisted: boolean;
+  inviteDelivery: "email" | "manual_link";
+  manualActionLink: string | null;
 };
 
 export type AccountPlayerAdminItem = {
@@ -246,6 +248,9 @@ export async function ensurePlayerLoginAccess(input: {
     fullName: response.fullName,
     invited: Boolean(response.invited),
     alreadyExisted: Boolean(response.alreadyExisted),
+    inviteDelivery:
+      response.inviteDelivery === "manual_link" ? "manual_link" : "email",
+    manualActionLink: typeof response.manualActionLink === "string" ? response.manualActionLink : null,
   };
 }
 
