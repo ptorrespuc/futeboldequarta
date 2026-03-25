@@ -24,13 +24,13 @@
                   Toque no botao abaixo para validar seu email e liberar o acesso ao app.
                 </p>
                 <p style="margin:0 0 12px;">
-                  <a href="borajogar://login?token_hash={{ .TokenHash }}&type=email" style="display:inline-block;background:#1d7f46;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:14px;font-size:15px;font-weight:700;">
-                    Confirmar email
+                  <a href="https://borajogar.expo.app/login?token_hash={{ .TokenHash }}&type=email" style="display:inline-block;background:#1d7f46;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:14px;font-size:15px;font-weight:700;">
+                    Confirmar email no BoraJogar
                   </a>
                 </p>
                 <p style="margin:0 0 24px;font-size:13px;line-height:21px;color:#6b7d71;">
-                  Se o seu app de email bloquear a abertura direta, use este link alternativo:
-                  <a href="{{ .ConfirmationURL }}" style="color:#1d7f46;">abrir confirmacao no navegador</a>.
+                  Se estiver no celular com o app instalado, voce tambem pode usar o link direto:
+                  <a href="borajogar://login?token_hash={{ .TokenHash }}&type=email" style="color:#1d7f46;">abrir no app</a>.
                 </p>
                 <p style="margin:0;font-size:13px;line-height:21px;color:#6b7d71;">
                   Se voce nao criou essa conta, pode ignorar esta mensagem.
