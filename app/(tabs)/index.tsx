@@ -51,6 +51,14 @@ const weekdayLabels = [
 ];
 
 const priorityColors = ["#1d7f46", "#5a9b3c", "#88938c", "#4d7c66", "#9aac8f"];
+const defaultPriorityGroupNames = ["Prioridade 1", "Prioridade 2", "Lista geral"];
+
+type PriorityGroupDraft = {
+  id: string;
+  name: string;
+};
+
+let priorityGroupDraftCounter = 0;
 
 type AccountAccessItem = {
   account: SportsAccount;
@@ -91,10 +99,28 @@ function isValidHourMinute(value: string) {
   return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
-function parsePriorityGroups(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
+function createPriorityGroupDraft(name = ""): PriorityGroupDraft {
+  priorityGroupDraftCounter += 1;
+
+  return {
+    id: `priority-group-${priorityGroupDraftCounter}`,
+    name,
+  };
+}
+
+function buildPriorityGroupDrafts(names: string[]) {
+  const normalizedNames = [...new Set(names.map((item) => item.trim()).filter(Boolean))];
+
+  if (normalizedNames.length === 0) {
+    return [createPriorityGroupDraft(defaultPriorityGroupNames[0])];
+  }
+
+  return normalizedNames.map((name) => createPriorityGroupDraft(name));
+}
+
+function mapPriorityGroupsForSave(drafts: PriorityGroupDraft[]) {
+  return drafts
+    .map((item) => item.name.trim())
     .filter(Boolean)
     .map((name, index) => ({
       name,
@@ -150,8 +176,8 @@ export default function HomeScreen() {
   const [createMaxPlayers, setCreateMaxPlayers] = useState("20");
   const [createOpenHours, setCreateOpenHours] = useState("48");
   const [createCloseMinutes, setCreateCloseMinutes] = useState("120");
-  const [createPriorityGroups, setCreatePriorityGroups] = useState(
-    "Prioridade 1, Prioridade 2, Lista geral",
+  const [priorityGroupDrafts, setPriorityGroupDrafts] = useState<PriorityGroupDraft[]>(() =>
+    buildPriorityGroupDrafts(defaultPriorityGroupNames),
   );
   const [membershipAccountIdDraft, setMembershipAccountIdDraft] = useState<string | null>(null);
   const [membershipEmailDraft, setMembershipEmailDraft] = useState("");
@@ -445,7 +471,51 @@ export default function HomeScreen() {
     setCreateMaxPlayers("20");
     setCreateOpenHours("48");
     setCreateCloseMinutes("120");
-    setCreatePriorityGroups("Prioridade 1, Prioridade 2, Lista geral");
+    setPriorityGroupDrafts(buildPriorityGroupDrafts(defaultPriorityGroupNames));
+  }
+
+  function updatePriorityGroupDraftName(draftId: string, nextName: string) {
+    setPriorityGroupDrafts((currentValue) =>
+      currentValue.map((item) => (item.id === draftId ? { ...item, name: nextName } : item)),
+    );
+  }
+
+  function addPriorityGroupDraft() {
+    setPriorityGroupDrafts((currentValue) => [
+      ...currentValue,
+      createPriorityGroupDraft(`Prioridade ${currentValue.length + 1}`),
+    ]);
+  }
+
+  function removePriorityGroupDraft(draftId: string) {
+    setPriorityGroupDrafts((currentValue) => {
+      if (currentValue.length <= 1) {
+        return currentValue;
+      }
+
+      return currentValue.filter((item) => item.id !== draftId);
+    });
+  }
+
+  function movePriorityGroupDraft(draftId: string, direction: -1 | 1) {
+    setPriorityGroupDrafts((currentValue) => {
+      const currentIndex = currentValue.findIndex((item) => item.id === draftId);
+
+      if (currentIndex === -1) {
+        return currentValue;
+      }
+
+      const nextIndex = currentIndex + direction;
+
+      if (nextIndex < 0 || nextIndex >= currentValue.length) {
+        return currentValue;
+      }
+
+      const nextValue = [...currentValue];
+      const [movedItem] = nextValue.splice(currentIndex, 1);
+      nextValue.splice(nextIndex, 0, movedItem);
+      return nextValue;
+    });
   }
 
   async function hydrateMembershipPriorityOptions(
@@ -572,7 +642,9 @@ export default function HomeScreen() {
       setCreateMaxPlayers(String(accountOverview.account.max_players_per_event));
       setCreateOpenHours(String(accountOverview.account.confirmation_open_hours_before));
       setCreateCloseMinutes(String(accountOverview.account.confirmation_close_minutes_before));
-      setCreatePriorityGroups(accountOverview.priorityGroups.map((group) => group.name).join(", "));
+      setPriorityGroupDrafts(
+        buildPriorityGroupDrafts(accountOverview.priorityGroups.map((group) => group.name)),
+      );
     } catch (loadError) {
       setMessage({ tone: "error", text: getReadableError(loadError) });
       setAdminModal(null);
@@ -658,7 +730,7 @@ export default function HomeScreen() {
     const confirmationOpenHoursBefore = Number(createOpenHours);
     const confirmationCloseMinutesBefore = Number(createCloseMinutes);
     const weekday = Number(createWeekday);
-    const priorityGroups = parsePriorityGroups(createPriorityGroups);
+    const priorityGroups = mapPriorityGroupsForSave(priorityGroupDrafts);
 
     if (
       !createNameDraft.trim() ||
@@ -1376,116 +1448,225 @@ export default function HomeScreen() {
                   </>
                 ) : (
                   <>
-                    <TextInput
-                      value={createNameDraft}
-                      onChangeText={setCreateNameDraft}
-                      placeholder="Nome da conta"
-                      placeholderTextColor={Colors.textMuted}
-                      style={styles.input}
-                    />
-                    <TextInput
-                      value={createSlugDraft}
-                      onChangeText={(value) => setCreateSlugDraft(slugify(value))}
-                      placeholder="slug-da-conta"
-                      placeholderTextColor={Colors.textMuted}
-                      style={styles.input}
-                      autoCapitalize="none"
-                    />
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionTitle}>Identificacao da conta</Text>
+                      <Text style={styles.fieldHint}>
+                        Defina o nome visivel da conta e o identificador interno usado pelo sistema.
+                      </Text>
 
-                    <Text style={styles.label}>Modalidade</Text>
-                    <View style={styles.chips}>
-                      {modalities.map((modality) => (
-                        <Pressable
-                          key={modality.id}
-                          onPress={() => setCreateModalityId(modality.id)}
-                          style={[
-                            styles.chip,
-                            createModalityId === modality.id && styles.chipSelected,
-                          ]}>
-                          <Text
-                            style={[
-                              styles.chipText,
-                              createModalityId === modality.id && styles.chipTextSelected,
-                            ]}>
-                            {modality.name}
+                      <View style={styles.fieldBlock}>
+                        <Text style={styles.label}>Nome da conta esportiva</Text>
+                        <Text style={styles.fieldHint}>
+                          Exemplo: Pelada de amigos, BoraJogar Tijuca, Racha de sexta.
+                        </Text>
+                        <TextInput
+                          value={createNameDraft}
+                          onChangeText={setCreateNameDraft}
+                          placeholder="Nome que aparece para os usuarios"
+                          placeholderTextColor={Colors.textMuted}
+                          style={styles.input}
+                        />
+                      </View>
+
+                      <View style={styles.fieldBlock}>
+                        <Text style={styles.label}>Identificador da conta</Text>
+                        <Text style={styles.fieldHint}>
+                          Usado internamente. Fica melhor com letras minusculas e hifens.
+                        </Text>
+                        <TextInput
+                          value={createSlugDraft}
+                          onChangeText={(value) => setCreateSlugDraft(slugify(value))}
+                          placeholder="pelada-da-quarta"
+                          placeholderTextColor={Colors.textMuted}
+                          style={styles.input}
+                          autoCapitalize="none"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionTitle}>Modalidade e agenda</Text>
+                      <Text style={styles.fieldHint}>
+                        Escolha a modalidade principal e o horario semanal padrao dos eventos.
+                      </Text>
+
+                      <View style={styles.fieldBlock}>
+                        <Text style={styles.label}>Modalidade esportiva</Text>
+                        <View style={styles.chips}>
+                          {modalities.map((modality) => (
+                            <Pressable
+                              key={modality.id}
+                              onPress={() => setCreateModalityId(modality.id)}
+                              style={[
+                                styles.chip,
+                                createModalityId === modality.id && styles.chipSelected,
+                              ]}>
+                              <Text
+                                style={[
+                                  styles.chipText,
+                                  createModalityId === modality.id && styles.chipTextSelected,
+                                ]}>
+                                {modality.name}
+                              </Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+
+                      <View style={styles.fieldBlock}>
+                        <Text style={styles.label}>Dia da semana do evento</Text>
+                        <View style={styles.chips}>
+                          {weekdayLabels.map((weekday, index) => (
+                            <Pressable
+                              key={weekday}
+                              onPress={() => setCreateWeekday(String(index))}
+                              style={[
+                                styles.chip,
+                                createWeekday === String(index) && styles.chipSelected,
+                              ]}>
+                              <Text
+                                style={[
+                                  styles.chipText,
+                                  createWeekday === String(index) && styles.chipTextSelected,
+                                ]}>
+                                {weekday}
+                              </Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+
+                      <View style={styles.row}>
+                        <View style={[styles.fieldBlock, styles.flex]}>
+                          <Text style={styles.label}>Hora de inicio</Text>
+                          <TextInput
+                            value={createStartsAt}
+                            onChangeText={setCreateStartsAt}
+                            placeholder="20:30"
+                            placeholderTextColor={Colors.textMuted}
+                            style={styles.input}
+                          />
+                        </View>
+                        <View style={[styles.fieldBlock, styles.flex]}>
+                          <Text style={styles.label}>Hora de fim</Text>
+                          <TextInput
+                            value={createEndsAt}
+                            onChangeText={setCreateEndsAt}
+                            placeholder="22:00"
+                            placeholderTextColor={Colors.textMuted}
+                            style={styles.input}
+                          />
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.formSection}>
+                      <Text style={styles.formSectionTitle}>Regras de presenca</Text>
+                      <Text style={styles.fieldHint}>
+                        Configure o limite do evento e quando a confirmacao de presenca abre e fecha.
+                      </Text>
+
+                      <View style={styles.row}>
+                        <View style={[styles.fieldBlock, styles.flex]}>
+                          <Text style={styles.label}>Maximo de jogadores</Text>
+                          <Text style={styles.fieldHint}>Quantidade total aceita no evento.</Text>
+                          <TextInput
+                            value={createMaxPlayers}
+                            onChangeText={setCreateMaxPlayers}
+                            placeholder="20"
+                            placeholderTextColor={Colors.textMuted}
+                            keyboardType="number-pad"
+                            style={styles.input}
+                          />
+                        </View>
+                        <View style={[styles.fieldBlock, styles.flex]}>
+                          <Text style={styles.label}>Abrir confirmacao (horas antes)</Text>
+                          <Text style={styles.fieldHint}>Ex.: 48 abre dois dias antes.</Text>
+                          <TextInput
+                            value={createOpenHours}
+                            onChangeText={setCreateOpenHours}
+                            placeholder="48"
+                            placeholderTextColor={Colors.textMuted}
+                            keyboardType="number-pad"
+                            style={styles.input}
+                          />
+                        </View>
+                        <View style={[styles.fieldBlock, styles.flex]}>
+                          <Text style={styles.label}>Fechar confirmacao (min antes)</Text>
+                          <Text style={styles.fieldHint}>Ex.: 120 fecha duas horas antes.</Text>
+                          <TextInput
+                            value={createCloseMinutes}
+                            onChangeText={setCreateCloseMinutes}
+                            placeholder="120"
+                            placeholderTextColor={Colors.textMuted}
+                            keyboardType="number-pad"
+                            style={styles.input}
+                          />
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.formSection}>
+                      <View style={styles.inlineHeader}>
+                        <View style={styles.inlineHeaderContent}>
+                          <Text style={styles.formSectionTitle}>Grupos prioritarios</Text>
+                          <Text style={styles.fieldHint}>
+                            A ordem da lista define a prioridade. O item 1 tem preferencia maior.
                           </Text>
+                        </View>
+                        <Pressable onPress={addPriorityGroupDraft} style={styles.secondaryButton}>
+                          <Text style={styles.secondaryButtonText}>Adicionar</Text>
                         </Pressable>
+                      </View>
+
+                      <Text style={styles.fieldHint}>
+                        Use nomes como Mensalistas, Convidados, Lista geral ou qualquer regra que faca sentido para sua conta.
+                      </Text>
+
+                      {priorityGroupDrafts.map((group, index) => (
+                        <View key={group.id} style={styles.priorityEditorCard}>
+                          <View style={styles.priorityEditorHeader}>
+                            <Text style={styles.priorityEditorTitle}>{index + 1}. Grupo da fila</Text>
+                            <View style={styles.priorityEditorActions}>
+                              <Pressable
+                                onPress={() => movePriorityGroupDraft(group.id, -1)}
+                                disabled={index === 0}
+                                style={[styles.inlineActionButton, index === 0 && styles.buttonDisabled]}>
+                                <Text style={styles.inlineActionText}>Subir</Text>
+                              </Pressable>
+                              <Pressable
+                                onPress={() => movePriorityGroupDraft(group.id, 1)}
+                                disabled={index === priorityGroupDrafts.length - 1}
+                                style={[
+                                  styles.inlineActionButton,
+                                  index === priorityGroupDrafts.length - 1 && styles.buttonDisabled,
+                                ]}>
+                                <Text style={styles.inlineActionText}>Descer</Text>
+                              </Pressable>
+                              <Pressable
+                                onPress={() => removePriorityGroupDraft(group.id)}
+                                disabled={priorityGroupDrafts.length === 1}
+                                style={[
+                                  styles.inlineDangerButton,
+                                  priorityGroupDrafts.length === 1 && styles.buttonDisabled,
+                                ]}>
+                                <Text style={styles.inlineDangerText}>
+                                  {priorityGroupDrafts.length === 1 ? "Minimo 1" : "Excluir"}
+                                </Text>
+                              </Pressable>
+                            </View>
+                          </View>
+
+                          <TextInput
+                            value={group.name}
+                            onChangeText={(value) => updatePriorityGroupDraftName(group.id, value)}
+                            placeholder={`Nome do grupo ${index + 1}`}
+                            placeholderTextColor={Colors.textMuted}
+                            style={styles.input}
+                          />
+                        </View>
                       ))}
                     </View>
-
-                    <Text style={styles.label}>Dia da semana</Text>
-                    <View style={styles.chips}>
-                      {weekdayLabels.map((weekday, index) => (
-                        <Pressable
-                          key={weekday}
-                          onPress={() => setCreateWeekday(String(index))}
-                          style={[
-                            styles.chip,
-                            createWeekday === String(index) && styles.chipSelected,
-                          ]}>
-                          <Text
-                            style={[
-                              styles.chipText,
-                              createWeekday === String(index) && styles.chipTextSelected,
-                            ]}>
-                            {weekday}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-
-                    <View style={styles.row}>
-                      <TextInput
-                        value={createStartsAt}
-                        onChangeText={setCreateStartsAt}
-                        placeholder="20:30"
-                        placeholderTextColor={Colors.textMuted}
-                        style={[styles.input, styles.flex]}
-                      />
-                      <TextInput
-                        value={createEndsAt}
-                        onChangeText={setCreateEndsAt}
-                        placeholder="22:00"
-                        placeholderTextColor={Colors.textMuted}
-                        style={[styles.input, styles.flex]}
-                      />
-                    </View>
-
-                    <View style={styles.row}>
-                      <TextInput
-                        value={createMaxPlayers}
-                        onChangeText={setCreateMaxPlayers}
-                        placeholder="Maximo"
-                        placeholderTextColor={Colors.textMuted}
-                        keyboardType="number-pad"
-                        style={[styles.input, styles.flex]}
-                      />
-                      <TextInput
-                        value={createOpenHours}
-                        onChangeText={setCreateOpenHours}
-                        placeholder="Abre (h)"
-                        placeholderTextColor={Colors.textMuted}
-                        keyboardType="number-pad"
-                        style={[styles.input, styles.flex]}
-                      />
-                      <TextInput
-                        value={createCloseMinutes}
-                        onChangeText={setCreateCloseMinutes}
-                        placeholder="Fecha (min)"
-                        placeholderTextColor={Colors.textMuted}
-                        keyboardType="number-pad"
-                        style={[styles.input, styles.flex]}
-                      />
-                    </View>
-
-                    <TextInput
-                      value={createPriorityGroups}
-                      onChangeText={setCreatePriorityGroups}
-                      placeholder="Prioridade 1, Prioridade 2, Lista geral"
-                      placeholderTextColor={Colors.textMuted}
-                      style={[styles.input, styles.multiline]}
-                      multiline
-                    />
 
                     <Pressable
                       onPress={() => void handleCreateAccount()}
@@ -1828,6 +2009,17 @@ const styles = StyleSheet.create({
   },
   multiline: { minHeight: 84, textAlignVertical: "top" },
   label: { color: Colors.text, fontSize: 13, fontWeight: "800" },
+  fieldBlock: { gap: 6 },
+  fieldHint: { color: Colors.textMuted, fontSize: 12, lineHeight: 18 },
+  formSection: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+    padding: 16,
+    gap: 12,
+  },
+  formSectionTitle: { color: Colors.text, fontSize: 16, fontWeight: "800" },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: {
     borderRadius: 999,
@@ -1909,6 +2101,33 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 12,
     paddingVertical: 32,
+  },
+  priorityEditorCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    padding: 12,
+    gap: 10,
+  },
+  priorityEditorHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  priorityEditorTitle: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "800",
+    flex: 1,
+    lineHeight: 18,
+  },
+  priorityEditorActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: 8,
   },
   messageCard: { borderRadius: 16, padding: 14 },
   messageError: { backgroundColor: "#fff2e6" },
