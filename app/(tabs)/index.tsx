@@ -281,9 +281,12 @@ export default function HomeScreen() {
   const [membershipPreparedPhoto, setMembershipPreparedPhoto] = useState<PreparedPlayerPhoto | null>(null);
   const [membershipPhotoTouched, setMembershipPhotoTouched] = useState(false);
   const [membershipRoleModalDraft, setMembershipRoleModalDraft] = useState<AccountRole>("player");
+  const [membershipActsAsPlayerDraft, setMembershipActsAsPlayerDraft] = useState(true);
+  const [membershipLinkedPlayerIdDraft, setMembershipLinkedPlayerIdDraft] = useState<string | null>(null);
   const [membershipPriorityGroupModalId, setMembershipPriorityGroupModalId] = useState<string | null>(null);
   const [membershipProfileIdDraft, setMembershipProfileIdDraft] = useState<string | null>(null);
   const [membershipPreferredPositionIds, setMembershipPreferredPositionIds] = useState<string[]>([]);
+  const [membershipWeeklyDefaultDraft, setMembershipWeeklyDefaultDraft] = useState(true);
   const [membershipPriorityOptions, setMembershipPriorityOptions] = useState<Array<{
     id: string;
     name: string;
@@ -585,7 +588,6 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (membershipRoleModalDraft !== "player") {
-      setMembershipPriorityGroupModalId(null);
       return;
     }
 
@@ -602,10 +604,16 @@ export default function HomeScreen() {
   }, [membershipRoleModalDraft, membershipPriorityOptions]);
 
   useEffect(() => {
-    setMembershipPreferredPositionIds((currentValue) =>
+      setMembershipPreferredPositionIds((currentValue) =>
       currentValue.filter((positionId) => membershipPositionOptions.some((position) => position.id === positionId)),
     );
   }, [membershipPositionOptions]);
+
+  useEffect(() => {
+    if (membershipRoleModalDraft === "player") {
+      setMembershipActsAsPlayerDraft(true);
+    }
+  }, [membershipRoleModalDraft]);
 
   async function reloadAccounts() {
     if (!profile?.is_super_admin) {
@@ -814,8 +822,11 @@ export default function HomeScreen() {
     setMembershipPreparedPhoto(null);
     setMembershipPhotoTouched(false);
     setMembershipRoleModalDraft("player");
+    setMembershipActsAsPlayerDraft(true);
+    setMembershipLinkedPlayerIdDraft(null);
     setMembershipProfileIdDraft(null);
     setMembershipPreferredPositionIds([]);
+    setMembershipWeeklyDefaultDraft(true);
     setMembershipPriorityOptions([]);
     setMembershipPositionOptions([]);
     setMembershipPriorityGroupModalId(null);
@@ -949,6 +960,8 @@ export default function HomeScreen() {
       setMembershipPreparedPhoto(null);
       setMembershipPhotoTouched(false);
       setMembershipRoleModalDraft(item.membership.role);
+      setMembershipActsAsPlayerDraft(Boolean(item.membership.account_player_id));
+      setMembershipLinkedPlayerIdDraft(item.membership.account_player_id);
       setMembershipProfileIdDraft(item.profile.id);
       await hydrateMembershipPriorityOptions(item.account.id, item.priorityGroup?.id ?? null);
       const accountOverview =
@@ -963,9 +976,12 @@ export default function HomeScreen() {
       setMembershipNameDraft(linkedPlayer?.player.full_name ?? item.profile.full_name);
       setMembershipPhotoUrlDraft(linkedPlayer?.player.photo_url ?? item.profile.photo_url ?? "");
       setMembershipExistingPhotoUrl(linkedPlayer?.player.photo_url ?? item.profile.photo_url ?? null);
+      setMembershipActsAsPlayerDraft(Boolean(linkedPlayer || item.membership.role === "player"));
+      setMembershipLinkedPlayerIdDraft(linkedPlayer?.player.id ?? item.membership.account_player_id ?? null);
       setMembershipPreferredPositionIds(
         linkedPlayer?.preferredPositions.map((position) => position.id) ?? [],
       );
+      setMembershipWeeklyDefaultDraft(linkedPlayer?.player.is_default_for_weekly_list ?? true);
       setMembershipPositionOptions(positions);
     } catch (loadError) {
       setMessage({ tone: "error", text: getReadableError(loadError) });
@@ -1336,7 +1352,7 @@ export default function HomeScreen() {
       return;
     }
 
-    if (membershipRoleModalDraft === "player" && !membershipPriorityGroupModalId) {
+    if (membershipActsAsPlayerDraft && !membershipPriorityGroupModalId) {
       setMessage({ tone: "error", text: "Selecione o grupo prioritario do jogador." });
       return;
     }
@@ -1369,7 +1385,7 @@ export default function HomeScreen() {
       profileId = linkedProfile.id;
       profileLabel = linkedProfile.full_name || linkedProfile.email;
 
-      if (membershipRoleModalDraft === "player" && profileId && profile?.id) {
+      if (membershipActsAsPlayerDraft && profileId && profile?.id) {
         const desiredPhotoUrl = membershipPhotoTouched
           ? membershipPhotoUrlDraft.trim() || null
           : membershipPhotoUrlDraft.trim() || linkedProfile.photo_url || null;
@@ -1380,6 +1396,7 @@ export default function HomeScreen() {
           photoUrl: desiredPhotoUrl,
           linkedProfileId: profileId,
           priorityGroupId: membershipPriorityGroupModalId,
+          isDefaultForWeeklyList: membershipWeeklyDefaultDraft,
           preferredPositionIds: membershipPreferredPositionIds,
           createdBy: profile.id,
         });
@@ -1399,7 +1416,7 @@ export default function HomeScreen() {
             photoUrl: uploadedPhotoUrl,
             linkedProfileId: profileId,
             priorityGroupId: membershipPriorityGroupModalId,
-            isDefaultForWeeklyList: linkedPlayer.is_default_for_weekly_list,
+            isDefaultForWeeklyList: membershipWeeklyDefaultDraft,
             preferredPositionIds: membershipPreferredPositionIds,
           });
         } else if (
@@ -1411,6 +1428,9 @@ export default function HomeScreen() {
         }
 
         accountPlayerId = linkedPlayer.id;
+      } else if (membershipLinkedPlayerIdDraft) {
+        await deactivateAccountPlayer(membershipLinkedPlayerIdDraft);
+        accountPlayerId = null;
       }
 
       if (!profileId) {
@@ -1423,7 +1443,7 @@ export default function HomeScreen() {
         profileId,
         accountPlayerId,
         role: membershipRoleModalDraft,
-        priorityGroupId: membershipRoleModalDraft === "player" ? membershipPriorityGroupModalId : null,
+        priorityGroupId: membershipActsAsPlayerDraft ? membershipPriorityGroupModalId : null,
       });
 
       await reloadMemberships();
@@ -2227,9 +2247,54 @@ export default function HomeScreen() {
                           ))}
                         </View>
                       </View>
+
+                      <View style={styles.fieldBlock}>
+                        <Text style={styles.label}>Participacao esportiva</Text>
+                        <Text style={styles.fieldHint}>
+                          Mesmo como admin ou moderador, a pessoa pode continuar como jogadora da conta.
+                        </Text>
+                        <View style={styles.chips}>
+                          <Pressable
+                            onPress={() => setMembershipActsAsPlayerDraft(true)}
+                            style={[
+                              styles.chip,
+                              membershipActsAsPlayerDraft && styles.chipSelected,
+                            ]}>
+                            <Text
+                              style={[
+                                styles.chipText,
+                                membershipActsAsPlayerDraft && styles.chipTextSelected,
+                              ]}>
+                              Tambem joga
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => {
+                              if (membershipRoleModalDraft === "player") {
+                                return;
+                              }
+
+                              setMembershipActsAsPlayerDraft(false);
+                            }}
+                            disabled={membershipRoleModalDraft === "player"}
+                            style={[
+                              styles.chip,
+                              !membershipActsAsPlayerDraft && styles.chipSelected,
+                              membershipRoleModalDraft === "player" && styles.buttonDisabled,
+                            ]}>
+                            <Text
+                              style={[
+                                styles.chipText,
+                                !membershipActsAsPlayerDraft && styles.chipTextSelected,
+                              ]}>
+                              So administra
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
                     </View>
 
-                    {membershipRoleModalDraft === "player" ? (
+                    {membershipActsAsPlayerDraft ? (
                       <View style={styles.formSection}>
                         <Text style={styles.formSectionTitle}>Dados esportivos do jogador</Text>
 
@@ -2287,6 +2352,43 @@ export default function HomeScreen() {
                                 </Pressable>
                               );
                             })}
+                          </View>
+                        </View>
+
+                        <View style={styles.fieldBlock}>
+                          <Text style={styles.label}>Lista base semanal</Text>
+                          <Text style={styles.fieldHint}>
+                            Define se esse usuario entra por padrao na lista semanal da conta.
+                          </Text>
+                          <View style={styles.chips}>
+                            <Pressable
+                              onPress={() => setMembershipWeeklyDefaultDraft(true)}
+                              style={[
+                                styles.chip,
+                                membershipWeeklyDefaultDraft && styles.chipSelected,
+                              ]}>
+                              <Text
+                                style={[
+                                  styles.chipText,
+                                  membershipWeeklyDefaultDraft && styles.chipTextSelected,
+                                ]}>
+                                Entrar na lista
+                              </Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => setMembershipWeeklyDefaultDraft(false)}
+                              style={[
+                                styles.chip,
+                                !membershipWeeklyDefaultDraft && styles.chipSelected,
+                              ]}>
+                              <Text
+                                style={[
+                                  styles.chipText,
+                                  !membershipWeeklyDefaultDraft && styles.chipTextSelected,
+                                ]}>
+                                Fora da lista
+                              </Text>
+                            </Pressable>
                           </View>
                         </View>
                       </View>

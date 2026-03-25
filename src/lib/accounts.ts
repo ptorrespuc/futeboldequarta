@@ -74,6 +74,7 @@ export type UpsertAccountPlayerFromAccessInput = {
   photoUrl: string | null;
   linkedProfileId: string;
   priorityGroupId: string | null;
+  isDefaultForWeeklyList: boolean;
   preferredPositionIds: string[];
   createdBy: string;
 };
@@ -864,11 +865,24 @@ async function syncPlayerMembership(input: {
     return;
   }
 
+  const { data: membershipData, error: membershipError } = await supabase
+    .from("account_memberships")
+    .select(
+      "id, account_id, profile_id, account_player_id, role, priority_group_id, is_active, joined_at, created_at, updated_at",
+    )
+    .eq("account_id", input.accountId)
+    .eq("profile_id", input.linkedProfileId)
+    .maybeSingle();
+
+  throwIfError(membershipError);
+
+  const existingMembership = (membershipData as AccountMembership | null) ?? null;
+
   await upsertAccountMembership({
     accountId: input.accountId,
     profileId: input.linkedProfileId,
     accountPlayerId: input.accountPlayerId,
-    role: "player",
+    role: existingMembership?.role ?? "player",
     priorityGroupId: input.priorityGroupId,
   });
 }
@@ -1077,16 +1091,16 @@ export async function upsertAccountPlayerFromAccess(
   }
 
   if (existingPlayer) {
-    await updateAccountPlayer({
-      playerId: existingPlayer.id,
-      fullName: input.fullName,
-      email: normalizedEmail,
-      photoUrl: input.photoUrl,
-      linkedProfileId: input.linkedProfileId,
-      priorityGroupId: input.priorityGroupId,
-      isDefaultForWeeklyList: existingPlayer.is_default_for_weekly_list,
-      preferredPositionIds: input.preferredPositionIds,
-    });
+      await updateAccountPlayer({
+        playerId: existingPlayer.id,
+        fullName: input.fullName,
+        email: normalizedEmail,
+        photoUrl: input.photoUrl,
+        linkedProfileId: input.linkedProfileId,
+        priorityGroupId: input.priorityGroupId,
+        isDefaultForWeeklyList: input.isDefaultForWeeklyList,
+        preferredPositionIds: input.preferredPositionIds,
+      });
 
     const { data: updatedPlayerData, error: updatedPlayerError } = await supabase
       .from("account_players")
@@ -1104,14 +1118,14 @@ export async function upsertAccountPlayerFromAccess(
     accountId: input.accountId,
     fullName: input.fullName,
     email: normalizedEmail,
-    photoUrl: input.photoUrl,
-    linkedProfileId: input.linkedProfileId,
-    priorityGroupId: input.priorityGroupId,
-    isDefaultForWeeklyList: true,
-    createdBy: input.createdBy,
-    preferredPositionIds: input.preferredPositionIds,
-  });
-}
+      photoUrl: input.photoUrl,
+      linkedProfileId: input.linkedProfileId,
+      priorityGroupId: input.priorityGroupId,
+      isDefaultForWeeklyList: input.isDefaultForWeeklyList,
+      createdBy: input.createdBy,
+      preferredPositionIds: input.preferredPositionIds,
+    });
+  }
 
 export async function deactivateAccountPlayer(playerId: string) {
   const { error } = await supabase
